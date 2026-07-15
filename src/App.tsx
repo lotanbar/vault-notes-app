@@ -57,7 +57,7 @@ function App() {
           </button>
           <button onClick={openVault}>
             <FolderOpen size={20} />
-            Open Vault
+            Open New Vault
           </button>
         </div>
         {error && <p className="error-text">{error}</p>}

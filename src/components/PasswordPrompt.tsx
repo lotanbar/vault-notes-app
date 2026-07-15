@@ -48,11 +48,21 @@ export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: Passw
         <div className="duration-row">
           <label className="duration-checkbox">
             <input
-              type="checkbox"
+              type="radio"
+              name="stayUnlocked"
               checked={stayUnlocked}
-              onChange={(e) => setStayUnlocked(e.currentTarget.checked)}
+              onChange={() => setStayUnlocked(true)}
             />
-            Keep unlocked for
+            Keep me unlocked for
+          </label>
+          <label className="duration-checkbox">
+            <input
+              type="radio"
+              name="stayUnlocked"
+              checked={!stayUnlocked}
+              onChange={() => setStayUnlocked(false)}
+            />
+            Don't keep me unlocked
           </label>
           {stayUnlocked && (
             <label className="duration-field">

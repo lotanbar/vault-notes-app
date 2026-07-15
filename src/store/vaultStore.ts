@@ -3,7 +3,7 @@ import Fuse from "fuse.js";
 import type { JSONContent } from "@tiptap/core";
 import { invoke } from "@tauri-apps/api/core";
 import { save, open } from "@tauri-apps/plugin-dialog";
-import type { VaultFile, TreeNode, NodeType, BookmarkIndex } from "../types/vault";
+import type { VaultFile, TreeNode, NodeType, BookmarkIndex, Attachment, NodeContent } from "../types/vault";
 import { deriveKey, encryptToB64, decryptFromB64, randomSaltB64, exportKeyB64, importKeyB64 } from "../crypto/crypto";
 import {
   insertNode,
@@ -127,8 +127,8 @@ interface VaultState {
 
   toggleNodeLock: (id: string) => void;
 
-  loadNodeContent: (id: string) => Promise<JSONContent | null>;
-  saveNodeContent: (id: string, doc: JSONContent) => Promise<void>;
+  loadNodeContent: (id: string) => Promise<NodeContent | null>;
+  saveNodeContent: (id: string, doc: JSONContent, attachments: Attachment[]) => Promise<void>;
 
   openFile: (node: TreeNode) => void;
   navigateToBookmark: (targetBookmarkId: string) => void;
@@ -548,15 +548,22 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       payload = await decryptFromB64(nodeKey, payload);
     }
     const plaintext = await decryptFromB64(masterKey, payload);
-    return JSON.parse(plaintext) as JSONContent;
+    const parsed = JSON.parse(plaintext);
+    // Legacy payloads are a bare TipTap doc (top-level `type: "doc"`); new payloads
+    // are an envelope `{ doc, attachments }` with no top-level `type` field.
+    if (parsed && parsed.type === "doc") {
+      return { doc: parsed as JSONContent, attachments: [] };
+    }
+    return { doc: parsed.doc as JSONContent, attachments: (parsed.attachments ?? []) as Attachment[] };
   },
 
-  saveNodeContent: async (id, doc) => {
+  saveNodeContent: async (id, doc, attachments) => {
     const { vault, masterKey, nodeKeys } = get();
     if (!vault || !masterKey) return;
     const node = findNode(vault.tree, id);
     if (!node) return;
-    let payload = await encryptToB64(masterKey, JSON.stringify(doc));
+    const envelope: NodeContent = { doc, attachments };
+    let payload = await encryptToB64(masterKey, JSON.stringify(envelope));
     if (node.locked) {
       const nodeKey = nodeKeys.get(id);
       if (!nodeKey) return;
@@ -676,7 +683,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         continue;
       }
       if (!docCache.has(hostNode.id)) {
-        docCache.set(hostNode.id, await loadNodeContent(hostNode.id));
+        const result = await loadNodeContent(hostNode.id);
+        docCache.set(hostNode.id, result?.doc ?? null);
       }
       const doc = docCache.get(hostNode.id);
       const label = doc ? extractBookmarks(doc).find((b) => b.bookmarkId === bookmarkId)?.label ?? null : null;
@@ -699,7 +707,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         entries.push({ fileId: node.id, fileName: node.name, locked: true, snippets: [] });
         continue;
       }
-      const doc = await loadNodeContent(referrerId);
+      const result = await loadNodeContent(referrerId);
+      const doc = result?.doc ?? null;
       const snippets = doc ? getLinkTextsForTargets(doc, targetSet) : [];
       entries.push({ fileId: node.id, fileName: node.name, locked: false, snippets });
     }
@@ -720,8 +729,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       if (node.type !== "file") continue;
       const locked = node.locked && !sessionUnlockedIds.has(node.id);
       if (locked) continue;
-      const doc = await loadNodeContent(node.id);
-      if (!doc) continue;
+      const result = await loadNodeContent(node.id);
+      if (!result) continue;
+      const doc = result.doc;
       const snippet = buildSnippet(extractPlainText(doc), q);
       if (snippet) snippetByFileId.set(node.id, snippet);
     }

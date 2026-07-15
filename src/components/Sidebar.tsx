@@ -203,7 +203,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
         >
           {selectedIds.length === 0 || singleSelectedIsLocked ? <Lock size={20} /> : <Unlock size={20} />}
         </button>
-        <button className="icon-btn spacer-left" onClick={openVault} title="Open Vault">
+        <button className="icon-btn spacer-left" onClick={openVault} title="Open New Vault">
           <FolderOpen size={20} />
         </button>
       </div>

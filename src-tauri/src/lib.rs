@@ -1,3 +1,4 @@
+mod attachments;
 mod vault;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -14,7 +15,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             vault::read_vault_file,
-            vault::write_vault_file
+            vault::write_vault_file,
+            attachments::write_temp_attachment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

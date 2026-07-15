@@ -1,13 +1,12 @@
 :root {
-  --bg-0: #ffffff;
   --bg-1: #f4f4f5;
   --bg-2: #e5e5e8;
   --border: #d2d2d7;
   --text-0: #000000;
-  --text-1: #3f3f46;
   --text-2: #6b6b74;
-  --overlay: rgba(20, 20, 22, 0.45);
-  --shadow: rgba(20, 20, 22, 0.12);
+  --scrim-rgb: 20, 20, 22;
+  --overlay: rgba(var(--scrim-rgb), 0.45);
+  --shadow: rgba(var(--scrim-rgb), 0.12);
 
   font-family: -apple-system, "Segoe UI", Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 18px;
@@ -28,15 +27,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg-0: #26262a;
     --bg-1: #1c1c1f;
     --bg-2: #38383e;
     --border: #4a4a52;
     --text-0: #ffffff;
-    --text-1: #d4d4d8;
     --text-2: #9a9aa3;
-    --overlay: rgba(0, 0, 0, 0.55);
-    --shadow: rgba(0, 0, 0, 0.35);
+    --scrim-rgb: 0, 0, 0;
+    --overlay: rgba(var(--scrim-rgb), 0.55);
+    --shadow: rgba(var(--scrim-rgb), 0.35);
   }
 }
 
@@ -89,7 +87,7 @@ button {
   font-weight: 600;
   font-family: inherit;
   color: var(--text-0);
-  background-color: var(--bg-0);
+  background-color: var(--bg-1);
   outline: none;
   transition: background-color 0.12s, border-color 0.12s, color 0.12s;
 }
@@ -114,26 +112,26 @@ button:disabled {
   opacity: 0.4;
 }
 button:disabled:hover {
-  background-color: var(--bg-0);
+  background-color: var(--bg-1);
 }
 button.danger {
   border-width: 2px;
 }
 button.danger:hover {
   background-color: var(--text-0);
-  color: var(--bg-0);
+  color: var(--bg-1);
 }
 button.danger:hover .lucide {
-  color: var(--bg-0);
+  color: var(--bg-1);
 }
 
 button.primary {
   background-color: var(--text-0);
-  color: var(--bg-0);
+  color: var(--bg-1);
   border-color: var(--text-0);
 }
 button.primary .lucide {
-  color: var(--bg-0);
+  color: var(--bg-1);
 }
 button.primary:hover {
   opacity: 0.85;
@@ -217,7 +215,7 @@ body.resizing-sidebar .sidebar-resize-handle {
   border-color: transparent;
 }
 .icon-btn.danger:hover .lucide {
-  color: var(--bg-0);
+  color: var(--bg-1);
 }
 .icon-btn.spacer-left,
 .toolbar-divider.spacer-left {
@@ -244,7 +242,7 @@ body.resizing-sidebar .sidebar-resize-handle {
   padding: 6px 10px;
   font-size: 0.72em;
   color: var(--text-2);
-  text-align: right;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -285,6 +283,7 @@ body.resizing-sidebar .sidebar-resize-handle {
 /* Editor */
 
 .editor {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -330,6 +329,89 @@ body.resizing-sidebar .sidebar-resize-handle {
 .editor-content .tiptap {
   outline: none;
   min-height: 100%;
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  background-color: var(--bg-1);
+  border: 2px dashed var(--text-2);
+}
+
+.drop-overlay .lucide {
+  color: var(--text-2);
+}
+
+.drop-overlay-text {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--bg-1);
+  cursor: pointer;
+}
+
+.attachment-chip:hover {
+  background-color: var(--bg-2);
+}
+
+.attachment-chip-icon {
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+
+.attachment-chip-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-chip-name {
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip-size {
+  font-size: 0.72em;
+  color: var(--text-2);
+}
+
+.attachment-chip-delete {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.attachment-reject-msg {
+  margin: 8px 0 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-2);
 }
 
 .bookmark-anchor {
@@ -439,7 +521,7 @@ body.ctrl-pressed .link-anchor {
   padding: 2px 24px 6px;
   font-size: 0.85em;
   font-style: italic;
-  color: var(--text-1);
+  color: var(--text-2);
 }
 
 /* Search */
@@ -466,7 +548,7 @@ body.ctrl-pressed .link-anchor {
 .search-input {
   width: 100%;
   padding: 0.45em 0.7em 0.45em 2em;
-  background-color: var(--bg-0);
+  background-color: var(--bg-1);
 }
 
 .search-results {
@@ -478,7 +560,7 @@ body.ctrl-pressed .link-anchor {
   z-index: 10;
   max-height: 320px;
   overflow-y: auto;
-  background: var(--bg-0);
+  background: var(--bg-1);
   color: var(--text-0);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -528,7 +610,7 @@ body.ctrl-pressed .link-anchor {
   padding-top: 2px;
   font-size: 0.83em;
   font-style: italic;
-  color: var(--text-1);
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -540,11 +622,18 @@ body.ctrl-pressed .link-anchor {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px;
+  margin: 1px 0;
+  padding: 5px 8px;
+  border-radius: 6px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
   color: var(--text-0);
+  transition: background-color 0.12s;
+}
+
+.tree-row:hover {
+  background-color: var(--bg-2);
 }
 
 .tree-row.selected {
@@ -615,9 +704,8 @@ body.ctrl-pressed .link-anchor {
 }
 
 .modal {
-  background: var(--bg-0);
+  background: var(--bg-1);
   color: var(--text-0);
-  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1.4em;
   min-width: 400px;
@@ -634,7 +722,7 @@ body.ctrl-pressed .link-anchor {
 }
 
 .modal p {
-  color: var(--text-1);
+  color: var(--text-2);
   font-size: 0.92em;
 }
 
@@ -654,7 +742,7 @@ body.ctrl-pressed .link-anchor {
   align-items: center;
   gap: 0.6em;
   font-size: 0.9em;
-  color: var(--text-1);
+  color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -673,7 +761,7 @@ body.ctrl-pressed .link-anchor {
   gap: 0.5em;
   font-size: 0.85em;
   font-weight: 600;
-  color: var(--text-1);
+  color: var(--text-2);
   white-space: nowrap;
 }
 
