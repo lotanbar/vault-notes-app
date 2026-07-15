@@ -125,7 +125,9 @@ interface VaultState {
   moveNodesAction: (ids: string[], parentId: string | null, index: number) => void;
   deleteNodesAction: (ids: string[]) => void;
 
+  addNodeLock: (id: string) => void;
   toggleNodeLock: (id: string) => void;
+  removeNodeLock: (id: string) => Promise<void>;
 
   loadNodeContent: (id: string) => Promise<NodeContent | null>;
   saveNodeContent: (id: string, doc: JSONContent, attachments: Attachment[]) => Promise<void>;
@@ -511,16 +513,19 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     });
   },
 
+  addNodeLock: (id) => {
+    const { vault } = get();
+    if (!vault) return;
+    const node = findNode(vault.tree, id);
+    if (!node || node.locked) return;
+    set({ pending: { kind: "node-lock", id }, passwordError: null });
+  },
+
   toggleNodeLock: (id) => {
     const { vault, sessionUnlockedIds } = get();
     if (!vault) return;
     const node = findNode(vault.tree, id);
-    if (!node) return;
-
-    if (!node.locked) {
-      set({ pending: { kind: "node-lock", id }, passwordError: null });
-      return;
-    }
+    if (!node || !node.locked) return;
 
     if (sessionUnlockedIds.has(id)) {
       const nextSessionUnlocked = new Set(sessionUnlockedIds);
@@ -534,6 +539,34 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     }
 
     set({ pending: { kind: "node-unlock", id }, passwordError: null });
+  },
+
+  removeNodeLock: async (id) => {
+    const { vault, sessionUnlockedIds, nodeKeys, filePath } = get();
+    if (!vault) return;
+    const node = findNode(vault.tree, id);
+    if (!node || !node.locked) return;
+    const nodeKey = nodeKeys.get(id);
+    if (!nodeKey) return;
+    const nextContent = node.content ? await decryptFromB64(nodeKey, node.content) : node.content;
+    const updatedTree = applyToNode(vault.tree, id, (n) => ({
+      ...n,
+      locked: false,
+      lockSalt: undefined,
+      lockCheck: undefined,
+      content: nextContent,
+    }));
+    const nextSessionUnlocked = new Set(sessionUnlockedIds);
+    nextSessionUnlocked.delete(id);
+    const nextNodeKeys = new Map(nodeKeys);
+    nextNodeKeys.delete(id);
+    if (filePath) clearNodeSession(filePath, id);
+    set({
+      vault: { ...vault, tree: updatedTree },
+      dirty: true,
+      sessionUnlockedIds: nextSessionUnlocked,
+      nodeKeys: nextNodeKeys,
+    });
   },
 
   loadNodeContent: async (id) => {

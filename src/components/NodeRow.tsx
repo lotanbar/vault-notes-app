@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { NodeApi, NodeRendererProps } from "react-arborist";
-import { ChevronRight, ChevronDown, Folder, File, Lock, Unlock } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, File, Lock, Unlock, ShieldPlus, ShieldX } from "lucide-react";
 import type { TreeNode } from "../types/vault";
 import { useVaultStore } from "../store/vaultStore";
 
@@ -29,14 +29,24 @@ function EditInput({ node }: { node: NodeApi<TreeNode> }) {
 
 interface NodeRowProps extends NodeRendererProps<TreeNode> {
   interactive?: boolean;
+  onRequestAddLock?: (id: string) => void;
+  onRequestRemoveLock?: (id: string) => void;
 }
 
-export function NodeRow({ node, style, dragHandle, interactive = true }: NodeRowProps) {
+export function NodeRow({
+  node,
+  style,
+  dragHandle,
+  interactive = true,
+  onRequestAddLock,
+  onRequestRemoveLock,
+}: NodeRowProps) {
   const data = node.data;
   const sessionUnlocked = useVaultStore((s) => s.sessionUnlockedIds.has(data.id));
   const toggleNodeLock = useVaultStore((s) => s.toggleNodeLock);
 
   const multiSelectActive = node.tree.selectedIds.size > 1;
+  const disabled = multiSelectActive || !interactive;
 
   return (
     <div ref={dragHandle} style={style} className={`tree-row${node.isSelected ? " selected" : ""}`}>
@@ -48,25 +58,51 @@ export function NodeRow({ node, style, dragHandle, interactive = true }: NodeRow
             node.toggle();
           }}
         >
-          {node.isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          {node.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </span>
       ) : (
         <span className="tree-toggle" />
       )}
       <span className="tree-icon">
-        {data.type === "folder" ? <Folder size={18} /> : <File size={18} />}
+        {data.type === "folder" ? <Folder size={15} /> : <File size={15} />}
       </span>
       {node.isEditing ? <EditInput node={node} /> : <span className="tree-name">{data.name}</span>}
-      {data.locked && (
+      {data.locked ? (
+        <span className="tree-lock-group">
+          <span
+            className={`tree-lock${disabled ? " disabled" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (disabled) return;
+              toggleNodeLock(data.id);
+            }}
+            title={sessionUnlocked ? "Lock" : "Unlock"}
+          >
+            {sessionUnlocked ? <Unlock size={15} /> : <Lock size={15} />}
+          </span>
+          <span
+            className={`tree-lock tree-lock-remove${disabled || !sessionUnlocked ? " disabled" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (disabled || !sessionUnlocked) return;
+              onRequestRemoveLock?.(data.id);
+            }}
+            title="Remove Lock"
+          >
+            <ShieldX size={15} />
+          </span>
+        </span>
+      ) : (
         <span
-          className={`tree-lock${multiSelectActive || !interactive ? " disabled" : ""}`}
+          className={`tree-lock tree-lock-add${disabled ? " disabled" : ""}`}
           onClick={(e) => {
             e.stopPropagation();
-            if (multiSelectActive || !interactive) return;
-            toggleNodeLock(data.id);
+            if (disabled) return;
+            onRequestAddLock?.(data.id);
           }}
+          title="Add Lock"
         >
-          {sessionUnlocked ? <Unlock size={16} /> : <Lock size={16} />}
+          <ShieldPlus size={15} />
         </span>
       )}
     </div>

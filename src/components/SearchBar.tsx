@@ -41,7 +41,7 @@ export function SearchBar({ onSelectFile, onSelectFolder }: SearchBarProps) {
   return (
     <div className="search-bar">
       <div className="search-input-wrap">
-        <Search size={17} />
+        <Search size={15} />
         <input
           type="text"
           className="search-input"
@@ -58,7 +58,7 @@ export function SearchBar({ onSelectFile, onSelectFolder }: SearchBarProps) {
             results.map((r) => (
               <div key={r.fileId} className="search-result-item" onClick={() => handleClick(r)}>
                 <span className="search-result-icon">
-                  {r.type === "folder" ? <Folder size={17} /> : <File size={17} />}
+                  {r.type === "folder" ? <Folder size={15} /> : <File size={15} />}
                 </span>
                 <div className="search-result-text">
                   <div className="search-result-name">{r.fileName}</div>

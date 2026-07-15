@@ -14,7 +14,7 @@ const DEFAULT_KEEP_UNLOCKED_HOURS = 8;
 export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: PasswordPromptProps) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [stayUnlocked, setStayUnlocked] = useState(true);
+  const [staysUnlocked, setStaysUnlocked] = useState(false);
   const [hours, setHours] = useState(DEFAULT_KEEP_UNLOCKED_HOURS);
 
   const mismatch = mode === "create" && confirm.length > 0 && password !== confirm;
@@ -23,7 +23,7 @@ export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: Passw
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    onSubmit(password, stayUnlocked ? hours : 0);
+    onSubmit(password, staysUnlocked ? hours : 0);
   }
 
   return (
@@ -46,25 +46,19 @@ export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: Passw
           />
         )}
         <div className="duration-row">
-          <label className="duration-checkbox">
-            <input
-              type="radio"
-              name="stayUnlocked"
-              checked={stayUnlocked}
-              onChange={() => setStayUnlocked(true)}
-            />
-            Keep me unlocked for
-          </label>
-          <label className="duration-checkbox">
-            <input
-              type="radio"
-              name="stayUnlocked"
-              checked={!stayUnlocked}
-              onChange={() => setStayUnlocked(false)}
-            />
-            Don't keep me unlocked
-          </label>
-          {stayUnlocked && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={staysUnlocked}
+            className={`toggle-switch-track${staysUnlocked ? " on" : ""}`}
+            onClick={() => setStaysUnlocked((v) => !v)}
+          >
+            <span className="toggle-switch-thumb" />
+          </button>
+          <span className="toggle-switch-label" onClick={() => setStaysUnlocked((v) => !v)}>
+            {staysUnlocked ? "Do NOT keep me locked after exit" : "Keep me locked after exit"}
+          </span>
+          {staysUnlocked && (
             <label className="duration-field">
               <input
                 type="number"

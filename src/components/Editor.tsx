@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { JSONContent } from "@tiptap/core";
@@ -24,8 +24,10 @@ import { Indent } from "../editor/indentExtension";
 import { BookmarkAnchor } from "../editor/bookmarkExtension";
 import { LinkAnchor } from "../editor/linkExtension";
 import { useVaultStore } from "../store/vaultStore";
+import { useZoomStore } from "../store/zoomStore";
 import { getAllBookmarkTexts, applyLinkValidity } from "../lib/bookmarkOps";
 import { fileToAttachment, MAX_ATTACHMENT_BYTES } from "../lib/attachmentOps";
+import { detectDirection } from "../lib/textDirection";
 import type { Attachment } from "../types/vault";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewBookmarkPopup } from "./NewBookmarkPopup";
@@ -34,7 +36,7 @@ import { ReferrersPopup } from "./ReferrersPopup";
 import { AttachmentRow } from "./AttachmentRow";
 
 const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 36];
-const DEFAULT_FONT_SIZE = 16;
+const DEFAULT_FONT_SIZE = 12;
 const SAVE_DEBOUNCE_MS = 500;
 
 interface EditorProps {
@@ -58,6 +60,8 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const navForward = useVaultStore((s) => s.navForward);
   const goBack = useVaultStore((s) => s.goBack);
   const goForward = useVaultStore((s) => s.goForward);
+  const uiZoom = useZoomStore((s) => s.uiZoom);
+  const editorZoom = useZoomStore((s) => s.editorZoom);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestDoc = useRef<JSONContent | null>(null);
@@ -203,9 +207,12 @@ export function Editor({ fileId, fileName }: EditorProps) {
         canRedo: ctx.editor.can().redo(),
         fontSize: Number.isNaN(parsed) ? DEFAULT_FONT_SIZE : parsed,
         hasSelection: !ctx.editor.state.selection.empty,
+        contentDir: detectDirection(ctx.editor.getText()),
       };
     },
   });
+
+  const titleDir = useMemo(() => detectDirection(fileName), [fileName]);
 
   function stepFontSize(dir: 1 | -1) {
     if (!editor || !toolbarState) return;
@@ -330,23 +337,23 @@ export function Editor({ fileId, fileName }: EditorProps) {
           onClick={() => editor.chain().focus().toggleBold().run()}
           title="Bold"
         >
-          <BoldIcon size={20} />
+          <BoldIcon size={15} />
         </button>
         <button
           className={`icon-btn${toolbarState?.underline ? " active" : ""}`}
           onClick={() => editor.chain().focus().toggleUnderline().run()}
           title="Underline"
         >
-          <UnderlineIcon size={20} />
+          <UnderlineIcon size={15} />
         </button>
         <span className="toolbar-divider" />
 
         <button className="icon-btn" onClick={() => stepFontSize(-1)} title="Decrease font size">
-          <Minus size={20} />
+          <Minus size={15} />
         </button>
         <span className="editor-font-size">{toolbarState?.fontSize ?? DEFAULT_FONT_SIZE}px</span>
         <button className="icon-btn" onClick={() => stepFontSize(1)} title="Increase font size">
-          <Plus size={20} />
+          <Plus size={15} />
         </button>
 
         <span className="toolbar-divider" />
@@ -357,7 +364,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={!toolbarState?.hasSelection}
           title="New Bookmark"
         >
-          <BookmarkIcon size={20} />
+          <BookmarkIcon size={15} />
         </button>
         <button
           className="icon-btn"
@@ -365,7 +372,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={!toolbarState?.hasSelection}
           title="New Link"
         >
-          <Link2 size={20} />
+          <Link2 size={15} />
         </button>
 
         <span className="toolbar-divider" />
@@ -376,7 +383,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={!toolbarState?.canUndo}
           title="Undo"
         >
-          <Undo2 size={20} />
+          <Undo2 size={15} />
         </button>
         <button
           className="icon-btn"
@@ -384,16 +391,16 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={!toolbarState?.canRedo}
           title="Redo"
         >
-          <Redo2 size={20} />
+          <Redo2 size={15} />
         </button>
 
         <span className="toolbar-divider spacer-left" />
 
         <button className="icon-btn" onClick={goBack} disabled={navBack.length === 0} title="Back">
-          <ArrowLeft size={20} />
+          <ArrowLeft size={15} />
         </button>
         <button className="icon-btn" onClick={goForward} disabled={navForward.length === 0} title="Forward">
-          <ArrowRight size={20} />
+          <ArrowRight size={15} />
         </button>
       </div>
 
@@ -410,8 +417,13 @@ export function Editor({ fileId, fileName }: EditorProps) {
         onRequestDelete={setPendingDeleteAttachment}
       />
 
-      <div className="editor-filename">{fileName}</div>
-      <EditorContent editor={editor} className="editor-content" />
+      <div className="editor-filename" dir={titleDir}>{fileName}</div>
+      <EditorContent
+        editor={editor}
+        className="editor-content"
+        dir={toolbarState?.contentDir ?? "ltr"}
+        style={{ zoom: editorZoom / uiZoom }}
+      />
 
       {isDragOver && (
         <div className="drop-overlay">

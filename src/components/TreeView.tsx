@@ -16,6 +16,8 @@ interface TreeViewProps {
   onRename?: (id: string, name: string) => void;
   onMove?: (ids: string[], parentId: string | null, index: number) => void;
   onBlankClick?: () => void;
+  onRequestAddLock?: (id: string) => void;
+  onRequestRemoveLock?: (id: string) => void;
   treeRef?: Ref<TreeApi<TreeNode> | undefined>;
   height?: number;
 }
@@ -29,6 +31,8 @@ export function TreeView({
   onRename,
   onMove,
   onBlankClick,
+  onRequestAddLock,
+  onRequestRemoveLock,
   treeRef,
   height,
 }: TreeViewProps) {
@@ -59,9 +63,16 @@ export function TreeView({
       onSelect={(selected) => onSelect?.(selected.map((n) => n.data))}
       onActivate={(node) => onOpen?.(node.data)}
       width="100%"
-      rowHeight={36}
+      rowHeight={27}
     >
-      {(rowProps) => <NodeRow {...rowProps} interactive={browse} />}
+      {(rowProps) => (
+        <NodeRow
+          {...rowProps}
+          interactive={browse}
+          onRequestAddLock={onRequestAddLock}
+          onRequestRemoveLock={onRequestRemoveLock}
+        />
+      )}
     </Tree>
   );
 }

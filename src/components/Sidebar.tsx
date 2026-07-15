@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { TreeApi } from "react-arborist";
-import { FolderPlus, FilePlus, PencilLine, Trash2, Lock, Unlock, FolderOpen, Link } from "lucide-react";
+import {
+  FolderPlus,
+  FilePlus,
+  PencilLine,
+  Trash2,
+  FolderUp,
+  Lock,
+  Unlock,
+  ShieldPlus,
+  ShieldX,
+  Vault as VaultIcon,
+  FolderOpen,
+  Link,
+} from "lucide-react";
 import { TreeView } from "./TreeView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ReferrersPopup } from "./ReferrersPopup";
@@ -24,7 +37,9 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   const renameNodeAction = useVaultStore((s) => s.renameNodeAction);
   const moveNodesAction = useVaultStore((s) => s.moveNodesAction);
   const deleteNodesAction = useVaultStore((s) => s.deleteNodesAction);
+  const addNodeLock = useVaultStore((s) => s.addNodeLock);
   const toggleNodeLock = useVaultStore((s) => s.toggleNodeLock);
+  const removeNodeLock = useVaultStore((s) => s.removeNodeLock);
   const openVault = useVaultStore((s) => s.openVault);
   const lockVault = useVaultStore((s) => s.lockVault);
 
@@ -32,6 +47,10 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
   const [entangledBookmarkIds, setEntangledBookmarkIds] = useState<string[] | null>(null);
   const [showReferrers, setShowReferrers] = useState(false);
+
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const treeWrapRef = useRef<HTMLDivElement>(null);
+  const [treeHeight, setTreeHeight] = useState(500);
 
   const MIN_SIDEBAR_WIDTH = 280;
   const SIDEBAR_MAX_RATIO = 0.7;
@@ -65,12 +84,35 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const el = treeWrapRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setTreeHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      if (sidebarRef.current && !sidebarRef.current.contains(e.target as Node)) {
+        setSelection([]);
+        treeApiRef.current?.deselectAll();
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [setSelection]);
+
   const sessionUnlockedIds = useVaultStore((s) => s.sessionUnlockedIds);
 
   const singleSelected = selectedIds.length === 1 ? selectedIds[0] : null;
   const multiSelectActive = selectedIds.length > 1;
   const singleSelectedNode = singleSelected && vault ? findNode(vault.tree, singleSelected) : null;
-  const singleSelectedIsLocked = singleSelectedNode?.locked && !sessionUnlockedIds.has(singleSelectedNode.id);
+  const singleSelectedHasLock = !!singleSelectedNode?.locked;
+  const singleSelectedNeedsPassword = singleSelectedHasLock && !sessionUnlockedIds.has(singleSelectedNode!.id);
 
   function handleCreate(type: "folder" | "file") {
     if (!vault) return;
@@ -103,12 +145,22 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     setShowReferrers(false);
   }
 
-  function handleLockButtonClick() {
-    if (selectedIds.length === 0) {
-      lockVault();
-      return;
-    }
+  function handleToggleSessionLock() {
     if (singleSelected) toggleNodeLock(singleSelected);
+  }
+
+  function handleAddOrRemoveLock() {
+    if (!singleSelected) return;
+    if (singleSelectedHasLock) {
+      removeNodeLock(singleSelected);
+    } else {
+      addNodeLock(singleSelected);
+    }
+  }
+
+  function handleMoveToRoot() {
+    if (!vault || selectedIds.length === 0) return;
+    moveNodesAction(selectedIds, null, vault.tree.children.length);
   }
 
   function handleBlankClick() {
@@ -166,7 +218,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     .filter((n): n is string => !!n);
 
   return (
-    <div className="sidebar" style={{ width: sidebarWidth }}>
+    <div className="sidebar" style={{ width: sidebarWidth }} ref={sidebarRef}>
       <div className="toolbar">
         <button
           className="icon-btn"
@@ -197,21 +249,42 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
         </button>
         <button
           className="icon-btn"
-          onClick={handleLockButtonClick}
-          disabled={multiSelectActive}
-          title={selectedIds.length === 0 ? "Lock Vault" : singleSelectedIsLocked ? "Unlock" : "Lock"}
+          onClick={handleMoveToRoot}
+          disabled={selectedIds.length === 0}
+          title="Move to Root"
         >
-          {selectedIds.length === 0 || singleSelectedIsLocked ? <Lock size={20} /> : <Unlock size={20} />}
+          <FolderUp size={20} />
+        </button>
+        <span className="toolbar-divider" />
+        <button
+          className="icon-btn"
+          onClick={handleToggleSessionLock}
+          disabled={multiSelectActive || !singleSelectedHasLock}
+          title={singleSelectedNeedsPassword ? "Unlock" : "Lock"}
+        >
+          {singleSelectedNeedsPassword ? <Lock size={20} /> : <Unlock size={20} />}
+        </button>
+        <button
+          className="icon-btn"
+          onClick={handleAddOrRemoveLock}
+          disabled={multiSelectActive || !singleSelected || (singleSelectedHasLock && singleSelectedNeedsPassword)}
+          title={singleSelectedHasLock ? "Remove Lock" : "Add Lock"}
+        >
+          {singleSelectedHasLock ? <ShieldX size={20} /> : <ShieldPlus size={20} />}
+        </button>
+        <button className="icon-btn" onClick={lockVault} title="Lock Vault">
+          <VaultIcon size={20} />
         </button>
         <button className="icon-btn spacer-left" onClick={openVault} title="Open New Vault">
           <FolderOpen size={20} />
         </button>
       </div>
       <SearchBar onSelectFile={handleSearchSelectFile} onSelectFolder={handleSearchSelectFolder} />
-      <div className="tree-wrap">
+      <div className="tree-wrap" ref={treeWrapRef}>
         <TreeView
           nodes={vault.tree.children}
           mode="browse"
+          height={treeHeight}
           treeRef={treeApiRef}
           onSelect={(nodes) => setSelection(nodes.map((n) => n.id))}
           onOpen={(node) => {
@@ -223,6 +296,8 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
           onRename={renameNodeAction}
           onMove={moveNodesAction}
           onBlankClick={handleBlankClick}
+          onRequestAddLock={addNodeLock}
+          onRequestRemoveLock={removeNodeLock}
         />
       </div>
       <div className="sidebar-footer" title={filePath ?? undefined}>
