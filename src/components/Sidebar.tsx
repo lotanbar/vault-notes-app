@@ -3,7 +3,6 @@ import type { TreeApi } from "react-arborist";
 import {
   FolderPlus,
   FilePlus,
-  PencilLine,
   Trash2,
   FolderUp,
   Lock,
@@ -13,6 +12,7 @@ import {
   Vault as VaultIcon,
   FolderOpen,
   Link,
+  PanelLeftOpen,
 } from "lucide-react";
 import { TreeView } from "./TreeView";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -54,8 +54,13 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
 
   const MIN_SIDEBAR_WIDTH = 280;
   const SIDEBAR_MAX_RATIO = 0.7;
+  const COLLAPSE_DRAG_DISTANCE = 60;
+  const RAIL_WIDTH = 56;
   const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapseArmed, setCollapseArmed] = useState(false);
   const draggingRef = useRef(false);
+  const collapseArmedRef = useRef(false);
 
   function handleResizeMouseDown(e: ReactMouseEvent) {
     e.preventDefault();
@@ -67,13 +72,27 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   function handleResizeMouseMove(e: MouseEvent) {
     if (!draggingRef.current) return;
     const max = window.innerWidth * SIDEBAR_MAX_RATIO;
-    setSidebarWidth(Math.min(Math.max(e.clientX, MIN_SIDEBAR_WIDTH), max));
+    if (e.clientX < MIN_SIDEBAR_WIDTH) {
+      // Freeze the visible width at the minimum instead of shrinking further;
+      // past a further drag distance, arm a full collapse on release.
+      setSidebarWidth(MIN_SIDEBAR_WIDTH);
+      const armed = MIN_SIDEBAR_WIDTH - e.clientX >= COLLAPSE_DRAG_DISTANCE;
+      collapseArmedRef.current = armed;
+      setCollapseArmed(armed);
+    } else {
+      setSidebarWidth(Math.min(e.clientX, max));
+      collapseArmedRef.current = false;
+      setCollapseArmed(false);
+    }
   }
   function handleResizeMouseUp() {
     draggingRef.current = false;
     document.body.classList.remove("resizing-sidebar");
     window.removeEventListener("mousemove", handleResizeMouseMove);
     window.removeEventListener("mouseup", handleResizeMouseUp);
+    if (collapseArmedRef.current) setCollapsed(true);
+    collapseArmedRef.current = false;
+    setCollapseArmed(false);
   }
   useEffect(() => {
     return () => {
@@ -118,10 +137,6 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     if (!vault) return;
     const { parentId, index } = resolveInsertTarget(vault.tree, selectedIds);
     treeApiRef.current?.create({ type: type === "folder" ? "internal" : "leaf", parentId, index });
-  }
-
-  function handleRename() {
-    if (singleSelected) treeApiRef.current?.edit(singleSelected);
   }
 
   function handleDeleteClick() {
@@ -218,95 +233,102 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     .filter((n): n is string => !!n);
 
   return (
-    <div className="sidebar" style={{ width: sidebarWidth }} ref={sidebarRef}>
-      <div className="toolbar">
+    <div
+      className={`sidebar${collapsed ? " collapsed" : ""}`}
+      style={{ width: collapsed ? RAIL_WIDTH : sidebarWidth }}
+      ref={sidebarRef}
+    >
+      {collapsed && (
         <button
-          className="icon-btn"
-          onClick={() => handleCreate("folder")}
-          disabled={multiSelectActive}
-          title="New Folder"
+          className="icon-btn sidebar-restore-btn"
+          onClick={() => setCollapsed(false)}
+          title="Show Explorer"
         >
-          <FolderPlus size={20} />
+          <PanelLeftOpen size={20} />
         </button>
-        <button
-          className="icon-btn"
-          onClick={() => handleCreate("file")}
-          disabled={multiSelectActive}
-          title="New File"
-        >
-          <FilePlus size={20} />
-        </button>
-        <button className="icon-btn" onClick={handleRename} disabled={!singleSelected} title="Rename">
-          <PencilLine size={20} />
-        </button>
-        <button
-          className="icon-btn danger"
-          onClick={handleDeleteClick}
-          disabled={selectedIds.length === 0}
-          title="Delete"
-        >
-          <Trash2 size={20} />
-        </button>
-        <button
-          className="icon-btn"
-          onClick={handleMoveToRoot}
-          disabled={selectedIds.length === 0}
-          title="Move to Root"
-        >
-          <FolderUp size={20} />
-        </button>
-        <span className="toolbar-divider" />
-        <button
-          className="icon-btn"
-          onClick={handleToggleSessionLock}
-          disabled={multiSelectActive || !singleSelectedHasLock}
-          title={singleSelectedNeedsPassword ? "Unlock" : "Lock"}
-        >
-          {singleSelectedNeedsPassword ? <Lock size={20} /> : <Unlock size={20} />}
-        </button>
-        <button
-          className="icon-btn"
-          onClick={handleAddOrRemoveLock}
-          disabled={multiSelectActive || !singleSelected || (singleSelectedHasLock && singleSelectedNeedsPassword)}
-          title={singleSelectedHasLock ? "Remove Lock" : "Add Lock"}
-        >
-          {singleSelectedHasLock ? <ShieldX size={20} /> : <ShieldPlus size={20} />}
-        </button>
-        <button className="icon-btn" onClick={lockVault} title="Lock Vault">
-          <VaultIcon size={20} />
-        </button>
-        <button className="icon-btn spacer-left" onClick={openVault} title="Open New Vault">
-          <FolderOpen size={20} />
-        </button>
-      </div>
-      <SearchBar onSelectFile={handleSearchSelectFile} onSelectFolder={handleSearchSelectFolder} />
-      <div className="tree-wrap" ref={treeWrapRef}>
-        <TreeView
-          nodes={vault.tree.children}
-          mode="browse"
-          height={treeHeight}
-          treeRef={treeApiRef}
-          onSelect={(nodes) => setSelection(nodes.map((n) => n.id))}
-          onOpen={(node) => {
-            if (node.type === "file") onOpenFile(node);
-          }}
-          onCreate={({ parentId, index, type }) =>
-            createNode(type === "internal" ? "folder" : "file", parentId, index)
-          }
-          onRename={renameNodeAction}
-          onMove={moveNodesAction}
-          onBlankClick={handleBlankClick}
-          onRequestAddLock={addNodeLock}
-          onRequestRemoveLock={removeNodeLock}
+      )}
+      {/* Kept mounted (not conditionally removed) so the tree's expanded-folder
+          state, selection, and DOM measurements survive collapsing/restoring. */}
+      <div className="sidebar-inner">
+        <div className="toolbar">
+          <button
+            className="icon-btn"
+            onClick={() => handleCreate("folder")}
+            disabled={multiSelectActive}
+            title="New Folder"
+          >
+            <FolderPlus size={20} />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => handleCreate("file")}
+            disabled={multiSelectActive}
+            title="New File"
+          >
+            <FilePlus size={20} />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={handleMoveToRoot}
+            disabled={selectedIds.length === 0}
+            title="Move to Root"
+          >
+            <FolderUp size={20} />
+          </button>
+          <span className="toolbar-divider" />
+          <button
+            className="icon-btn"
+            onClick={handleToggleSessionLock}
+            disabled={multiSelectActive || !singleSelectedHasLock}
+            title={singleSelectedNeedsPassword ? "Unlock" : "Lock"}
+          >
+            {singleSelectedNeedsPassword ? <Lock size={20} /> : <Unlock size={20} />}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={handleAddOrRemoveLock}
+            disabled={multiSelectActive || !singleSelected || (singleSelectedHasLock && singleSelectedNeedsPassword)}
+            title={singleSelectedHasLock ? "Remove Lock" : "Add Lock"}
+          >
+            {singleSelectedHasLock ? <ShieldX size={20} /> : <ShieldPlus size={20} />}
+          </button>
+          <button className="icon-btn" onClick={lockVault} title="Lock Vault">
+            <VaultIcon size={20} />
+          </button>
+          <button className="icon-btn spacer-left" onClick={openVault} title="Open New Vault">
+            <FolderOpen size={20} />
+          </button>
+        </div>
+        <SearchBar onSelectFile={handleSearchSelectFile} onSelectFolder={handleSearchSelectFolder} />
+        <div className="tree-wrap" ref={treeWrapRef}>
+          <TreeView
+            nodes={vault.tree.children}
+            mode="browse"
+            height={treeHeight}
+            treeRef={treeApiRef}
+            onSelect={(nodes) => setSelection(nodes.map((n) => n.id))}
+            onOpen={(node) => {
+              if (node.type === "file") onOpenFile(node);
+            }}
+            onCreate={({ parentId, index, type }) =>
+              createNode(type === "internal" ? "folder" : "file", parentId, index)
+            }
+            onRename={renameNodeAction}
+            onMove={moveNodesAction}
+            onBlankClick={handleBlankClick}
+            onRequestAddLock={addNodeLock}
+            onRequestRemoveLock={removeNodeLock}
+          />
+        </div>
+        <div className="sidebar-footer" title={filePath ?? undefined}>
+          {filePath}
+        </div>
+        <div
+          className="sidebar-resize-handle"
+          onMouseDown={handleResizeMouseDown}
         />
       </div>
-      <div className="sidebar-footer" title={filePath ?? undefined}>
-        {filePath}
-      </div>
-      <div
-        className="sidebar-resize-handle"
-        onMouseDown={handleResizeMouseDown}
-      />
+      {collapseArmed && <div className="sidebar-collapse-flash" />}
       {confirmDelete && !showReferrers && (
         <ConfirmDialog
           title="Delete"

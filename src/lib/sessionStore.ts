@@ -1,6 +1,6 @@
 // Persists "stay unlocked" sessions across app restarts in localStorage, scoped by
-// vault file path. Only the derived AES key material is stored (never the password),
-// each entry carrying its own expiry so it self-invalidates after the chosen duration.
+// vault file path. Only the derived AES key material is stored (never the password).
+// Sessions persist until explicitly cleared by a lock action.
 
 const LAST_VAULT_KEY = "vault-notes:lastVaultPath";
 
@@ -14,7 +14,6 @@ function nodeSessionsKey(vaultPath: string): string {
 
 interface StoredSession {
   keyB64: string;
-  expiresAt: number;
 }
 
 export function getLastVaultPath(): string | null {
@@ -30,17 +29,15 @@ export function loadVaultSession(vaultPath: string): StoredSession | null {
   if (!raw) return null;
   try {
     const parsed: StoredSession = JSON.parse(raw);
-    if (typeof parsed.keyB64 !== "string" || parsed.expiresAt <= Date.now()) return null;
+    if (typeof parsed.keyB64 !== "string") return null;
     return parsed;
   } catch {
     return null;
   }
 }
 
-export function saveVaultSession(vaultPath: string, keyB64: string, hours: number): void {
-  if (hours <= 0) return;
-  const expiresAt = Date.now() + hours * 60 * 60 * 1000;
-  localStorage.setItem(vaultSessionKey(vaultPath), JSON.stringify({ keyB64, expiresAt }));
+export function saveVaultSession(vaultPath: string, keyB64: string): void {
+  localStorage.setItem(vaultSessionKey(vaultPath), JSON.stringify({ keyB64 }));
 }
 
 export function clearVaultSession(vaultPath: string): void {
@@ -52,22 +49,15 @@ export function loadNodeSessions(vaultPath: string): Record<string, StoredSessio
   const raw = localStorage.getItem(nodeSessionsKey(vaultPath));
   if (!raw) return {};
   try {
-    const parsed: Record<string, StoredSession> = JSON.parse(raw);
-    const now = Date.now();
-    const valid: Record<string, StoredSession> = {};
-    for (const [id, s] of Object.entries(parsed)) {
-      if (s.expiresAt > now) valid[id] = s;
-    }
-    return valid;
+    return JSON.parse(raw);
   } catch {
     return {};
   }
 }
 
-export function saveNodeSession(vaultPath: string, nodeId: string, keyB64: string, hours: number): void {
-  if (hours <= 0) return;
+export function saveNodeSession(vaultPath: string, nodeId: string, keyB64: string): void {
   const sessions = loadNodeSessions(vaultPath);
-  sessions[nodeId] = { keyB64, expiresAt: Date.now() + hours * 60 * 60 * 1000 };
+  sessions[nodeId] = { keyB64 };
   localStorage.setItem(nodeSessionsKey(vaultPath), JSON.stringify(sessions));
 }
 

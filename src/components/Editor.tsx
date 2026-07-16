@@ -1,18 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import type { JSONContent } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
-import { TextStyle, FontSize } from "@tiptap/extension-text-style";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
-  Bold as BoldIcon,
-  Underline as UnderlineIcon,
-  Minus,
-  Plus,
-  Undo2,
-  Redo2,
   Bookmark as BookmarkIcon,
   Link2,
   ArrowLeft,
@@ -20,24 +10,22 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
-import { Indent } from "../editor/indentExtension";
-import { BookmarkAnchor } from "../editor/bookmarkExtension";
-import { LinkAnchor } from "../editor/linkExtension";
+import { monaco, registerIndentCarryingEnter, currentThemeName, watchThemeChanges } from "../editor/monacoSetup";
 import { useVaultStore } from "../store/vaultStore";
 import { useZoomStore } from "../store/zoomStore";
-import { getAllBookmarkTexts, applyLinkValidity } from "../lib/bookmarkOps";
+import { isLinkBroken } from "../lib/bookmarkOps";
 import { fileToAttachment, MAX_ATTACHMENT_BYTES } from "../lib/attachmentOps";
 import { detectDirection } from "../lib/textDirection";
-import type { Attachment } from "../types/vault";
+import type { Attachment, NodeContent } from "../types/vault";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewBookmarkPopup } from "./NewBookmarkPopup";
 import { BookmarkPickerPopup } from "./BookmarkPickerPopup";
 import { ReferrersPopup } from "./ReferrersPopup";
 import { AttachmentRow } from "./AttachmentRow";
 
-const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 36];
-const DEFAULT_FONT_SIZE = 12;
 const SAVE_DEBOUNCE_MS = 500;
+const BASE_FONT_SIZE = 12;
+const STICKINESS = monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges;
 
 interface EditorProps {
   fileId: string;
@@ -45,9 +33,47 @@ interface EditorProps {
 }
 
 interface PendingBookmarkDeletion {
+  // "shrink": text covering a bookmark was deleted (auto-undone pending confirmation).
+  // "explicit": the bookmark button removed a mark directly (no text touched).
+  kind: "shrink" | "explicit";
   shrunkIds: string[];
   entangledIds: string[];
 }
+
+type MarkMode = "disabled" | "create" | "remove";
+
+function computeMarkMode(
+  selFrom: number,
+  selTo: number,
+  ranges: { id: string; from: number; to: number }[],
+): { mode: MarkMode; id?: string } {
+  const containing = ranges.find((r) => r.from <= selFrom && selTo <= r.to);
+  if (containing) return { mode: "remove", id: containing.id };
+  const overlaps = ranges.some((r) => selFrom < r.to && selTo > r.from);
+  if (overlaps) return { mode: "disabled" };
+  return { mode: "create" };
+}
+
+interface BookmarkMeta {
+  bookmarkId: string;
+  label: string;
+}
+
+interface LinkMeta {
+  linkId: string;
+  targetBookmarkId: string;
+  broken: boolean;
+}
+
+interface ToolbarState {
+  contentDir: "ltr" | "rtl";
+  bookmarkMode: MarkMode;
+  bookmarkRemoveId?: string;
+  linkMode: MarkMode;
+  linkRemoveId?: string;
+}
+
+const EMPTY_CONTENT: NodeContent = { text: "", bookmarks: [], links: [], attachments: [] };
 
 export function Editor({ fileId, fileName }: EditorProps) {
   const loadNodeContent = useVaultStore((s) => s.loadNodeContent);
@@ -55,6 +81,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const addBookmarkToIndex = useVaultStore((s) => s.addBookmarkToIndex);
   const removeBookmarkFromIndex = useVaultStore((s) => s.removeBookmarkFromIndex);
   const addReferrerToIndex = useVaultStore((s) => s.addReferrerToIndex);
+  const removeReferrerFromIndex = useVaultStore((s) => s.removeReferrerFromIndex);
   const activeBookmarkId = useVaultStore((s) => s.activeBookmarkId);
   const navBack = useVaultStore((s) => s.navBack);
   const navForward = useVaultStore((s) => s.navForward);
@@ -63,15 +90,23 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const uiZoom = useZoomStore((s) => s.uiZoom);
   const editorZoom = useZoomStore((s) => s.editorZoom);
 
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestDoc = useRef<JSONContent | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const bookmarkDecosRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+  const linkDecosRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+  const bookmarkMetaRef = useRef<BookmarkMeta[]>([]);
+  const linkMetaRef = useRef<LinkMeta[]>([]);
+  const latestContentRef = useRef<NodeContent>(EMPTY_CONTENT);
   const latestAttachments = useRef<Attachment[]>([]);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragCounter = useRef(0);
   const rejectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
-  const prevBookmarkTextRef = useRef<Map<string, string>>(new Map());
+  const prevBookmarkWidthsRef = useRef<Map<string, number>>(new Map());
   const skipBookmarkCheckRef = useRef(false);
 
+  const [editorReady, setEditorReady] = useState(false);
+  const [toolbarState, setToolbarState] = useState<ToolbarState | null>(null);
   const [showNewBookmarkPopup, setShowNewBookmarkPopup] = useState(false);
   const [showLinkPicker, setShowLinkPicker] = useState(false);
   const [pendingBookmarkDeletion, setPendingBookmarkDeletion] = useState<PendingBookmarkDeletion | null>(null);
@@ -82,75 +117,259 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const [rejectedNames, setRejectedNames] = useState<string[]>([]);
 
   function flushSave() {
-    if (!latestDoc.current) return;
-    saveNodeContent(fileId, latestDoc.current, latestAttachments.current);
+    if (!loadedRef.current) return;
+    saveNodeContent(fileId, { ...latestContentRef.current, attachments: latestAttachments.current });
   }
 
-  const editor = useEditor(
-    {
-      extensions: [StarterKit, TextStyle, FontSize, Indent, BookmarkAnchor, LinkAnchor],
-      content: "",
-      onUpdate: ({ editor }) => {
-        if (!loadedRef.current) return;
+  function refreshToolbarState() {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const selection = editor.getSelection();
+    const hasSelection = !!selection && !selection.isEmpty();
+    const selFrom = selection ? model.getOffsetAt(selection.getStartPosition()) : 0;
+    const selTo = selection ? model.getOffsetAt(selection.getEndPosition()) : 0;
 
-        const nextTexts = getAllBookmarkTexts(editor.getJSON());
-        const prevTexts = prevBookmarkTextRef.current;
+    const bookmarkRanges = (bookmarkDecosRef.current?.getRanges() ?? []).map((r, i) => ({
+      id: bookmarkMetaRef.current[i]?.bookmarkId,
+      from: model.getOffsetAt(r.getStartPosition()),
+      to: model.getOffsetAt(r.getEndPosition()),
+    }));
+    const linkRanges = (linkDecosRef.current?.getRanges() ?? []).map((r, i) => ({
+      id: linkMetaRef.current[i]?.linkId,
+      from: model.getOffsetAt(r.getStartPosition()),
+      to: model.getOffsetAt(r.getEndPosition()),
+    }));
+
+    const bookmark = hasSelection ? computeMarkMode(selFrom, selTo, bookmarkRanges) : { mode: "disabled" as const };
+    const link = hasSelection ? computeMarkMode(selFrom, selTo, linkRanges) : { mode: "disabled" as const };
+
+    setToolbarState({
+      contentDir: detectDirection(model.getValue()),
+      bookmarkMode: bookmark.mode,
+      bookmarkRemoveId: bookmark.id,
+      linkMode: link.mode,
+      linkRemoveId: link.id,
+    });
+  }
+
+  function rebuildBookmarkDecorations(editor: monaco.editor.IStandaloneCodeEditor, ranges: monaco.Range[]) {
+    const decos = ranges.map((range) => ({ range, options: { inlineClassName: "bookmark-anchor", stickiness: STICKINESS } }));
+    if (bookmarkDecosRef.current) bookmarkDecosRef.current.set(decos);
+    else bookmarkDecosRef.current = editor.createDecorationsCollection(decos);
+  }
+
+  function rebuildLinkDecorations(editor: monaco.editor.IStandaloneCodeEditor, ranges: monaco.Range[]) {
+    const decos = ranges.map((range, i) => ({
+      range,
+      options: {
+        inlineClassName: linkMetaRef.current[i]?.broken ? "link-anchor link-anchor-broken" : "link-anchor",
+        stickiness: STICKINESS,
+      },
+    }));
+    if (linkDecosRef.current) linkDecosRef.current.set(decos);
+    else linkDecosRef.current = editor.createDecorationsCollection(decos);
+  }
+
+  function removeBookmarkMark(bookmarkId: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const idx = bookmarkMetaRef.current.findIndex((m) => m.bookmarkId === bookmarkId);
+    if (idx === -1) return;
+    const ranges = (bookmarkDecosRef.current?.getRanges() ?? []).filter((_, i) => i !== idx);
+    bookmarkMetaRef.current = bookmarkMetaRef.current.filter((_, i) => i !== idx);
+    prevBookmarkWidthsRef.current.delete(bookmarkId);
+    rebuildBookmarkDecorations(editor, ranges);
+    removeBookmarkFromIndex(bookmarkId);
+    refreshToolbarState();
+  }
+
+  function removeLinkMark(linkId: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const idx = linkMetaRef.current.findIndex((m) => m.linkId === linkId);
+    if (idx === -1) return;
+    const meta = linkMetaRef.current[idx];
+    const ranges = (linkDecosRef.current?.getRanges() ?? []).filter((_, i) => i !== idx);
+    linkMetaRef.current = linkMetaRef.current.filter((_, i) => i !== idx);
+    rebuildLinkDecorations(editor, ranges);
+    removeReferrerFromIndex(meta.targetBookmarkId, fileId);
+    refreshToolbarState();
+  }
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let cancelled = false;
+
+    const editor = monaco.editor.create(containerRef.current, {
+      value: "",
+      language: "plaintext",
+      theme: currentThemeName(),
+      automaticLayout: true,
+      minimap: { enabled: false },
+      renderLineHighlight: "all",
+      cursorBlinking: "solid",
+      foldingStrategy: "indentation",
+      showFoldingControls: "always",
+      wordWrap: "on",
+      scrollBeyondLastLine: false,
+      padding: { top: 8, bottom: 32 },
+      fontFamily: "Consolas, 'Cascadia Mono', 'Courier New', monospace",
+      fontSize: BASE_FONT_SIZE,
+      tabSize: 4,
+      insertSpaces: true,
+      // Plaintext notes have no language provider backing any of this, but several
+      // of these features scan the raw text on every keystroke/cursor move regardless
+      // (word/selection occurrence highlighting, link detection, bracket matching,
+      // unicode-ambiguity scanning) — turn off everything that isn't multi-cursor,
+      // move-lines, folding, or basic editing.
+      quickSuggestions: false,
+      wordBasedSuggestions: "off",
+      suggestOnTriggerCharacters: false,
+      parameterHints: { enabled: false },
+      hover: { enabled: false },
+      links: false,
+      occurrencesHighlight: "off",
+      selectionHighlight: false,
+      matchBrackets: "never",
+      bracketPairColorization: { enabled: false },
+      guides: { bracketPairs: false, indentation: true },
+      unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
+      codeLens: false,
+      lightbulb: { enabled: monaco.editor.ShowLightbulbIconMode.Off },
+      inlayHints: { enabled: "off" },
+      stickyScroll: { enabled: false },
+      renderValidationDecorations: "off",
+    });
+    editorRef.current = editor;
+    registerIndentCarryingEnter(editor);
+    setEditorReady(true);
+
+    const stopThemeWatch = watchThemeChanges((theme) => editor.updateOptions({ theme }));
+
+    const disposables = [
+      editor.onDidChangeModelContent(() => {
+        if (!loadedRef.current) return;
+        const model = editor.getModel();
+        if (!model) return;
+
+        const bookmarkRanges = bookmarkDecosRef.current?.getRanges() ?? [];
+        const nextBookmarks = bookmarkMetaRef.current.map((meta, i) => {
+          const r = bookmarkRanges[i];
+          return {
+            bookmarkId: meta.bookmarkId,
+            label: meta.label,
+            from: r ? model.getOffsetAt(r.getStartPosition()) : 0,
+            to: r ? model.getOffsetAt(r.getEndPosition()) : 0,
+          };
+        });
+
+        const linkRanges = linkDecosRef.current?.getRanges() ?? [];
+        const nextLinks = linkMetaRef.current.map((meta, i) => {
+          const r = linkRanges[i];
+          return {
+            linkId: meta.linkId,
+            targetBookmarkId: meta.targetBookmarkId,
+            from: r ? model.getOffsetAt(r.getStartPosition()) : 0,
+            to: r ? model.getOffsetAt(r.getEndPosition()) : 0,
+          };
+        });
 
         if (!skipBookmarkCheckRef.current) {
           const shrunkIds: string[] = [];
-          for (const [id, prevText] of prevTexts) {
-            const nextText = nextTexts.get(id) ?? "";
-            if (nextText.length < prevText.length) shrunkIds.push(id);
+          for (const b of nextBookmarks) {
+            const prevWidth = prevBookmarkWidthsRef.current.get(b.bookmarkId) ?? 0;
+            if (b.to - b.from < prevWidth) shrunkIds.push(b.bookmarkId);
           }
           if (shrunkIds.length > 0) {
             const currentIndex = useVaultStore.getState().vault?.index ?? {};
             const entangledIds = shrunkIds.filter((id) => (currentIndex[id]?.referrers.length ?? 0) > 0);
             if (entangledIds.length > 0) {
-              editor.commands.undo();
-              setPendingBookmarkDeletion({ shrunkIds, entangledIds });
+              editor.trigger("source", "undo", null);
+              setPendingBookmarkDeletion({ kind: "shrink", shrunkIds, entangledIds });
               return;
             }
             for (const id of shrunkIds) {
-              if ((nextTexts.get(id) ?? "").length === 0) {
-                useVaultStore.getState().removeBookmarkFromIndex(id);
-              }
+              const b = nextBookmarks.find((x) => x.bookmarkId === id);
+              if (b && b.to - b.from === 0) useVaultStore.getState().removeBookmarkFromIndex(id);
             }
           }
         }
         skipBookmarkCheckRef.current = false;
-        prevBookmarkTextRef.current = nextTexts;
+        prevBookmarkWidthsRef.current = new Map(nextBookmarks.map((b) => [b.bookmarkId, b.to - b.from]));
 
-        latestDoc.current = editor.getJSON();
+        latestContentRef.current = {
+          text: model.getValue(),
+          bookmarks: nextBookmarks,
+          links: nextLinks,
+          attachments: latestAttachments.current,
+        };
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
-      },
-    },
-    [],
-  );
 
-  useEffect(() => {
-    if (!editor) return;
-    let cancelled = false;
+        refreshToolbarState();
+      }),
+      editor.onDidChangeCursorSelection(() => refreshToolbarState()),
+      editor.onMouseDown((e: monaco.editor.IEditorMouseEvent) => {
+        if (!(e.event.ctrlKey || e.event.metaKey)) return;
+        if (!e.target.position) return;
+        const model = editor.getModel();
+        if (!model) return;
+        const offset = model.getOffsetAt(e.target.position);
+        const ranges = linkDecosRef.current?.getRanges() ?? [];
+        for (let i = 0; i < ranges.length; i++) {
+          const from = model.getOffsetAt(ranges[i].getStartPosition());
+          const to = model.getOffsetAt(ranges[i].getEndPosition());
+          if (offset >= from && offset <= to) {
+            useVaultStore.getState().navigateToBookmark(linkMetaRef.current[i].targetBookmarkId);
+            return;
+          }
+        }
+      }),
+    ];
+
     loadNodeContent(fileId).then((result) => {
       if (cancelled) return;
-      const doc = result?.doc ?? null;
-      const vault = useVaultStore.getState().vault;
-      const content = doc ? (vault ? applyLinkValidity(doc, vault.index) : doc) : "";
-      editor.commands.setContent(content, { emitUpdate: false });
-      latestDoc.current = editor.getJSON();
-      prevBookmarkTextRef.current = doc ? getAllBookmarkTexts(doc) : new Map();
-      latestAttachments.current = result?.attachments ?? [];
-      setAttachments(latestAttachments.current);
+      const content = result ?? EMPTY_CONTENT;
+      const model = editor.getModel();
+      if (!model) return;
+      model.setValue(content.text);
+
+      const index = useVaultStore.getState().vault?.index ?? {};
+      bookmarkMetaRef.current = content.bookmarks.map((b) => ({ bookmarkId: b.bookmarkId, label: b.label }));
+      rebuildBookmarkDecorations(
+        editor,
+        content.bookmarks.map((b) => monaco.Range.fromPositions(model.getPositionAt(b.from), model.getPositionAt(b.to))),
+      );
+      linkMetaRef.current = content.links.map((l) => ({
+        linkId: l.linkId,
+        targetBookmarkId: l.targetBookmarkId,
+        broken: isLinkBroken(l, index),
+      }));
+      rebuildLinkDecorations(
+        editor,
+        content.links.map((l) => monaco.Range.fromPositions(model.getPositionAt(l.from), model.getPositionAt(l.to))),
+      );
+
+      latestAttachments.current = content.attachments;
+      setAttachments(content.attachments);
+      prevBookmarkWidthsRef.current = new Map(content.bookmarks.map((b) => [b.bookmarkId, b.to - b.from]));
+      latestContentRef.current = content;
       loadedRef.current = true;
 
       const targetBookmarkId = useVaultStore.getState().activeBookmarkId;
-      if (targetBookmarkId) {
-        const el = editor.view.dom.querySelector(`[data-bookmark-id="${targetBookmarkId}"]`);
-        el?.scrollIntoView({ block: "center" });
+      const target = targetBookmarkId ? content.bookmarks.find((b) => b.bookmarkId === targetBookmarkId) : undefined;
+      if (target) {
+        const pos = model.getPositionAt(target.from);
+        editor.revealLineInCenter(pos.lineNumber, monaco.editor.ScrollType.Immediate);
       }
+      refreshToolbarState();
     });
+
     return () => {
       cancelled = true;
+      stopThemeWatch();
+      for (const d of disposables) d.dispose();
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
@@ -159,19 +378,33 @@ export function Editor({ fileId, fileName }: EditorProps) {
         clearTimeout(rejectTimer.current);
         rejectTimer.current = null;
       }
-      if (loadedRef.current) {
-        flushSave();
-        latestDoc.current = null;
-      }
+      if (loadedRef.current) flushSave();
+      const model = editor.getModel();
+      editor.dispose();
+      model?.dispose();
+      editorRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor]);
+  }, []);
 
   useEffect(() => {
-    if (!editor || !loadedRef.current || !activeBookmarkId) return;
-    const el = editor.view.dom.querySelector(`[data-bookmark-id="${activeBookmarkId}"]`);
-    el?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [editor, activeBookmarkId]);
+    if (!editorReady || !loadedRef.current || !activeBookmarkId) return;
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const idx = bookmarkMetaRef.current.findIndex((m) => m.bookmarkId === activeBookmarkId);
+    if (idx === -1) return;
+    const range = (bookmarkDecosRef.current?.getRanges() ?? [])[idx];
+    if (!range) return;
+    editor.revealLineInCenter(range.getStartPosition().lineNumber, monaco.editor.ScrollType.Smooth);
+  }, [activeBookmarkId, editorReady]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !editorReady) return;
+    editor.updateOptions({ fontSize: BASE_FONT_SIZE * (editorZoom / uiZoom) });
+    editor.layout();
+  }, [editorZoom, uiZoom, editorReady]);
 
   useEffect(() => {
     function down(e: KeyboardEvent) {
@@ -194,63 +427,99 @@ export function Editor({ fileId, fileName }: EditorProps) {
     };
   }, []);
 
-  const toolbarState = useEditorState({
-    editor,
-    selector: (ctx) => {
-      if (!ctx.editor) return null;
-      const fontSizeAttr = ctx.editor.getAttributes("textStyle").fontSize as string | undefined;
-      const parsed = fontSizeAttr ? parseInt(fontSizeAttr, 10) : NaN;
-      return {
-        bold: ctx.editor.isActive("bold"),
-        underline: ctx.editor.isActive("underline"),
-        canUndo: ctx.editor.can().undo(),
-        canRedo: ctx.editor.can().redo(),
-        fontSize: Number.isNaN(parsed) ? DEFAULT_FONT_SIZE : parsed,
-        hasSelection: !ctx.editor.state.selection.empty,
-        contentDir: detectDirection(ctx.editor.getText()),
-      };
-    },
-  });
+  function getSelectionRange(): monaco.Range | null {
+    const editor = editorRef.current;
+    const selection = editor?.getSelection();
+    if (!editor || !selection || selection.isEmpty()) return null;
+    return selection;
+  }
 
-  const titleDir = useMemo(() => detectDirection(fileName), [fileName]);
-
-  function stepFontSize(dir: 1 | -1) {
-    if (!editor || !toolbarState) return;
-    const current = toolbarState.fontSize;
-    const idx = FONT_SIZES.reduce(
-      (closest, size, i) =>
-        Math.abs(size - current) < Math.abs(FONT_SIZES[closest] - current) ? i : closest,
-      0,
-    );
-    const nextIdx = Math.min(Math.max(idx + dir, 0), FONT_SIZES.length - 1);
-    editor.chain().focus().setFontSize(`${FONT_SIZES[nextIdx]}px`).run();
+  function getSelectedText(): string {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const range = getSelectionRange();
+    if (!editor || !model || !range) return "";
+    return model.getValueInRange(range);
   }
 
   function handleCreateBookmark(label: string) {
-    if (!editor) return;
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const range = getSelectionRange();
+    if (!editor || !model || !range) return;
     const bookmarkId = crypto.randomUUID();
-    editor.chain().focus().setBookmark({ bookmarkId, label }).run();
+    bookmarkMetaRef.current = [...bookmarkMetaRef.current, { bookmarkId, label }];
+    const ranges = [...(bookmarkDecosRef.current?.getRanges() ?? []), range];
+    rebuildBookmarkDecorations(editor, ranges);
+    prevBookmarkWidthsRef.current.set(bookmarkId, model.getOffsetAt(range.getEndPosition()) - model.getOffsetAt(range.getStartPosition()));
     addBookmarkToIndex(bookmarkId, fileId);
     setShowNewBookmarkPopup(false);
+    editor.focus();
   }
 
   function handleCreateLink(targetBookmarkId: string) {
-    if (!editor) return;
+    const editor = editorRef.current;
+    const range = getSelectionRange();
+    if (!editor || !range) return;
     const linkId = crypto.randomUUID();
-    editor.chain().focus().setLinkAnchor({ linkId, targetBookmarkId, broken: false }).run();
+    linkMetaRef.current = [...linkMetaRef.current, { linkId, targetBookmarkId, broken: false }];
+    const ranges = [...(linkDecosRef.current?.getRanges() ?? []), range];
+    rebuildLinkDecorations(editor, ranges);
     addReferrerToIndex(targetBookmarkId, fileId);
     setShowLinkPicker(false);
+    editor.focus();
   }
 
   function handleDeleteBookmarkAnyway() {
-    if (!pendingBookmarkDeletion || !editor) return;
+    if (!pendingBookmarkDeletion) return;
+
+    if (pendingBookmarkDeletion.kind === "explicit") {
+      for (const id of pendingBookmarkDeletion.entangledIds) removeBookmarkMark(id);
+      setPendingBookmarkDeletion(null);
+      return;
+    }
+
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
     skipBookmarkCheckRef.current = true;
-    editor.commands.redo();
-    const textsAfter = getAllBookmarkTexts(editor.getJSON());
+    editor.trigger("source", "redo", null);
+    const ranges = bookmarkDecosRef.current?.getRanges() ?? [];
     for (const id of pendingBookmarkDeletion.entangledIds) {
-      if ((textsAfter.get(id) ?? "").length === 0) removeBookmarkFromIndex(id);
+      const idx = bookmarkMetaRef.current.findIndex((m) => m.bookmarkId === id);
+      const r = idx >= 0 ? ranges[idx] : undefined;
+      const width = r ? model.getOffsetAt(r.getEndPosition()) - model.getOffsetAt(r.getStartPosition()) : 0;
+      if (width === 0) removeBookmarkFromIndex(id);
     }
     setPendingBookmarkDeletion(null);
+  }
+
+  function handleBookmarkButtonClick() {
+    const mode = toolbarState?.bookmarkMode ?? "disabled";
+    if (mode === "create") {
+      setShowNewBookmarkPopup(true);
+      return;
+    }
+    if (mode === "remove" && toolbarState?.bookmarkRemoveId) {
+      const id = toolbarState.bookmarkRemoveId;
+      const referrers = useVaultStore.getState().vault?.index[id]?.referrers ?? [];
+      if (referrers.length > 0) {
+        setPendingBookmarkDeletion({ kind: "explicit", shrunkIds: [id], entangledIds: [id] });
+      } else {
+        removeBookmarkMark(id);
+      }
+    }
+  }
+
+  function handleLinkButtonClick() {
+    const mode = toolbarState?.linkMode ?? "disabled";
+    if (mode === "create") {
+      setShowLinkPicker(true);
+      return;
+    }
+    if (mode === "remove" && toolbarState?.linkRemoveId) {
+      removeLinkMark(toolbarState.linkRemoveId);
+    }
   }
 
   async function handleAddAttachments(fileList: FileList | File[]) {
@@ -317,11 +586,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
     if (e.dataTransfer.files.length > 0) handleAddAttachments(e.dataTransfer.files);
   }
 
-  if (!editor) return null;
-
-  const selectedText = editor.state.selection.empty
-    ? ""
-    : editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to);
+  const titleDir = detectDirection(fileName);
 
   return (
     <div
@@ -333,74 +598,29 @@ export function Editor({ fileId, fileName }: EditorProps) {
     >
       <div className="editor-toolbar">
         <button
-          className={`icon-btn${toolbarState?.bold ? " active" : ""}`}
-          onClick={() => editor.chain().focus().toggleBold().run()}
-          title="Bold"
-        >
-          <BoldIcon size={15} />
-        </button>
-        <button
-          className={`icon-btn${toolbarState?.underline ? " active" : ""}`}
-          onClick={() => editor.chain().focus().toggleUnderline().run()}
-          title="Underline"
-        >
-          <UnderlineIcon size={15} />
-        </button>
-        <span className="toolbar-divider" />
-
-        <button className="icon-btn" onClick={() => stepFontSize(-1)} title="Decrease font size">
-          <Minus size={15} />
-        </button>
-        <span className="editor-font-size">{toolbarState?.fontSize ?? DEFAULT_FONT_SIZE}px</span>
-        <button className="icon-btn" onClick={() => stepFontSize(1)} title="Increase font size">
-          <Plus size={15} />
-        </button>
-
-        <span className="toolbar-divider" />
-
-        <button
           className="icon-btn"
-          onClick={() => setShowNewBookmarkPopup(true)}
-          disabled={!toolbarState?.hasSelection}
-          title="New Bookmark"
+          onClick={handleBookmarkButtonClick}
+          disabled={(toolbarState?.bookmarkMode ?? "disabled") === "disabled"}
+          title={toolbarState?.bookmarkMode === "remove" ? "Remove Bookmark" : "New Bookmark"}
         >
-          <BookmarkIcon size={15} />
+          <BookmarkIcon size={18} />
         </button>
         <button
           className="icon-btn"
-          onClick={() => setShowLinkPicker(true)}
-          disabled={!toolbarState?.hasSelection}
-          title="New Link"
+          onClick={handleLinkButtonClick}
+          disabled={(toolbarState?.linkMode ?? "disabled") === "disabled"}
+          title={toolbarState?.linkMode === "remove" ? "Remove Link" : "New Link"}
         >
-          <Link2 size={15} />
-        </button>
-
-        <span className="toolbar-divider" />
-
-        <button
-          className="icon-btn"
-          onClick={() => editor.chain().focus().undo().run()}
-          disabled={!toolbarState?.canUndo}
-          title="Undo"
-        >
-          <Undo2 size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => editor.chain().focus().redo().run()}
-          disabled={!toolbarState?.canRedo}
-          title="Redo"
-        >
-          <Redo2 size={15} />
+          <Link2 size={18} />
         </button>
 
         <span className="toolbar-divider spacer-left" />
 
         <button className="icon-btn" onClick={goBack} disabled={navBack.length === 0} title="Back">
-          <ArrowLeft size={15} />
+          <ArrowLeft size={18} />
         </button>
         <button className="icon-btn" onClick={goForward} disabled={navForward.length === 0} title="Forward">
-          <ArrowRight size={15} />
+          <ArrowRight size={18} />
         </button>
       </div>
 
@@ -418,11 +638,10 @@ export function Editor({ fileId, fileName }: EditorProps) {
       />
 
       <div className="editor-filename" dir={titleDir}>{fileName}</div>
-      <EditorContent
-        editor={editor}
-        className="editor-content"
+      <div
+        ref={containerRef}
+        className="editor-content monaco-host"
         dir={toolbarState?.contentDir ?? "ltr"}
-        style={{ zoom: editorZoom / uiZoom }}
       />
 
       {isDragOver && (
@@ -434,7 +653,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
 
       {showNewBookmarkPopup && (
         <NewBookmarkPopup
-          defaultLabel={selectedText}
+          defaultLabel={getSelectedText()}
           onSubmit={handleCreateBookmark}
           onCancel={() => setShowNewBookmarkPopup(false)}
         />

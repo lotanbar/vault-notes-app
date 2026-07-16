@@ -8,7 +8,7 @@
   --overlay: rgba(var(--scrim-rgb), 0.45);
   --shadow: rgba(var(--scrim-rgb), 0.12);
 
-  font-family: -apple-system, "Segoe UI", Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   font-size: 18px;
   line-height: 1.5;
   font-weight: 600;
@@ -153,6 +153,7 @@ button.primary:disabled {
 .error-text {
   font-weight: 600;
   font-size: 0.95em;
+  padding-inline: 20px;
 }
 
 /* App shell */
@@ -172,6 +173,22 @@ button.primary:disabled {
   flex-direction: column;
   background-color: var(--bg-1);
   border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.sidebar.collapsed .sidebar-inner {
+  display: none;
+}
+
+.sidebar.collapsed {
+  border-right-color: transparent;
 }
 
 .sidebar-resize-handle {
@@ -182,10 +199,12 @@ button.primary:disabled {
   height: 100%;
   cursor: col-resize;
   z-index: 5;
+  background-color: transparent;
+  transition: background-color 120ms ease;
 }
 
 .sidebar-resize-handle:hover {
-  background-color: var(--border);
+  background-color: color-mix(in srgb, var(--border) 60%, transparent);
 }
 
 body.resizing-sidebar {
@@ -194,7 +213,23 @@ body.resizing-sidebar {
 }
 
 body.resizing-sidebar .sidebar-resize-handle {
-  background-color: var(--text-2);
+  background-color: color-mix(in srgb, var(--text-2) 55%, transparent);
+}
+
+.sidebar-collapse-flash {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: #ffffff;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.sidebar-restore-btn {
+  margin: 8px;
+  flex-shrink: 0;
 }
 
 .toolbar {
@@ -262,7 +297,6 @@ body.resizing-sidebar .sidebar-resize-handle {
 .main-body {
   flex: 1;
   min-height: 0;
-  padding: 0 20px;
   overflow: auto;
 }
 
@@ -305,7 +339,7 @@ body.resizing-sidebar .sidebar-resize-handle {
   align-items: center;
   flex-wrap: wrap;
   gap: 2px;
-  padding: 8px 0;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -316,15 +350,8 @@ body.resizing-sidebar .sidebar-resize-handle {
   margin: 0 6px;
 }
 
-.editor-font-size {
-  font-size: 0.6em;
-  color: var(--text-2);
-  min-width: 2.6em;
-  text-align: center;
-}
-
 .editor-filename {
-  padding: 14px 0 8px;
+  padding: 14px 20px 8px;
   font-size: 1.1em;
   font-weight: 600;
 }
@@ -334,13 +361,14 @@ body.resizing-sidebar .sidebar-resize-handle {
   min-height: 0;
   overflow: auto;
   padding-bottom: 2em;
+  padding-inline-end: 20px;
 }
 
-.editor-content .tiptap {
-  outline: none;
-  min-height: 100%;
-  font-size: 12px;
-  font-weight: 400;
+.monaco-host {
+  /* Monaco owns its full content box internally; equivalent breathing room
+     is applied via the editor's own `padding` option instead of CSS. */
+  padding-bottom: 0;
+  padding-inline-end: 0;
 }
 
 .drop-overlay {
@@ -370,7 +398,7 @@ body.resizing-sidebar .sidebar-resize-handle {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding-top: 10px;
+  padding: 10px 20px 0;
 }
 
 .attachment-chip {
@@ -421,6 +449,7 @@ body.resizing-sidebar .sidebar-resize-handle {
 
 .attachment-reject-msg {
   margin: 8px 0 0;
+  padding-inline: 20px;
   font-size: 0.85em;
   font-weight: 600;
   color: var(--text-2);
@@ -442,11 +471,11 @@ body.ctrl-pressed .link-anchor {
   cursor: pointer;
 }
 
-.link-anchor[data-broken="true"] {
+.link-anchor.link-anchor-broken {
   text-decoration: wavy underline;
 }
 
-.link-anchor[data-broken="true"]::after {
+.link-anchor.link-anchor-broken::after {
   content: "!";
   position: absolute;
   top: -0.6em;
@@ -765,69 +794,6 @@ body.ctrl-pressed .link-anchor {
 }
 
 .modal-error {
-  font-weight: 600;
-}
-
-.duration-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.7em;
-}
-
-.toggle-switch-track {
-  position: relative;
-  width: 2.6em;
-  height: 1.4em;
-  border-radius: 999px;
-  background-color: var(--bg-2);
-  border: 1.5px solid var(--border);
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-}
-
-.toggle-switch-track.on {
-  background-color: var(--text-0);
-  border-color: var(--text-0);
-}
-
-.toggle-switch-thumb {
-  position: absolute;
-  top: 1.5px;
-  left: 1.5px;
-  width: 1.1em;
-  height: 1.1em;
-  border-radius: 50%;
-  background-color: var(--bg-1);
-  transition: transform 0.15s ease;
-}
-
-.toggle-switch-track.on .toggle-switch-thumb {
-  transform: translateX(1.2em);
-}
-
-.toggle-switch-label {
-  font-size: 0.9em;
-  color: var(--text-2);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.duration-field {
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-  font-size: 0.85em;
-  font-weight: 600;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-
-.duration-field input {
-  width: 4.5em;
-  padding: 0.35em 0.5em;
   font-weight: 600;
 }
 

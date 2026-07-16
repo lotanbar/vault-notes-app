@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import Fuse from "fuse.js";
-import type { JSONContent } from "@tiptap/core";
 import { invoke } from "@tauri-apps/api/core";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import type { VaultFile, TreeNode, NodeType, BookmarkIndex, Attachment, NodeContent } from "../types/vault";
@@ -16,7 +15,8 @@ import {
   flattenTree,
 } from "../lib/treeOps";
 import { extractBookmarks, getLinkTextsForTargets } from "../lib/bookmarkOps";
-import { extractPlainText, buildSnippet } from "../lib/searchOps";
+import { buildSnippet } from "../lib/searchOps";
+import { convertTiptapDocToPlainText, type LegacyNode } from "../editor/legacyMigration";
 import {
   getLastVaultPath,
   setLastVaultPath,
@@ -113,7 +113,7 @@ interface VaultState {
   newVault: () => Promise<void>;
   openVault: () => Promise<void>;
   tryAutoOpenLastVault: () => Promise<void>;
-  submitPassword: (password: string, keepUnlockedHours: number) => Promise<void>;
+  submitPassword: (password: string) => Promise<void>;
   cancelPassword: () => void;
   saveVault: () => Promise<void>;
   saveVaultAs: () => Promise<void>;
@@ -130,7 +130,7 @@ interface VaultState {
   removeNodeLock: (id: string) => Promise<void>;
 
   loadNodeContent: (id: string) => Promise<NodeContent | null>;
-  saveNodeContent: (id: string, doc: JSONContent, attachments: Attachment[]) => Promise<void>;
+  saveNodeContent: (id: string, content: NodeContent) => Promise<void>;
 
   openFile: (node: TreeNode) => void;
   navigateToBookmark: (targetBookmarkId: string) => void;
@@ -252,7 +252,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     }
   },
 
-  submitPassword: async (password, keepUnlockedHours) => {
+  submitPassword: async (password) => {
     const { pending, vault } = get();
     if (!pending) return;
 
@@ -273,7 +273,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           contents: JSON.stringify(newVaultFile, null, 2),
         });
         setLastVaultPath(pending.path);
-        saveVaultSession(pending.path, await exportKeyB64(key), keepUnlockedHours);
+        saveVaultSession(pending.path, await exportKeyB64(key));
         set({
           filePath: pending.path,
           vault: newVaultFile,
@@ -302,9 +302,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         const decrypted = await decryptFromB64(key, pending.raw.masterCheck);
         if (decrypted !== MASTER_CHECK_SENTINEL) throw new Error("mismatch");
         setLastVaultPath(pending.path);
-        saveVaultSession(pending.path, await exportKeyB64(key), keepUnlockedHours);
+        saveVaultSession(pending.path, await exportKeyB64(key));
 
-        // Restore any locked-node sessions still within their own unlock window.
+        // Restore any locked-node sessions from the previous run.
         const nodeSessions = loadNodeSessions(pending.path);
         const nodeKeys = new Map<string, CryptoKey>();
         const sessionUnlockedIds = new Set<string>();
@@ -357,7 +357,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const sessionUnlockedIds = new Set(get().sessionUnlockedIds);
       sessionUnlockedIds.add(pending.id);
       const { filePath } = get();
-      if (filePath) saveNodeSession(filePath, pending.id, await exportKeyB64(key), keepUnlockedHours);
+      if (filePath) saveNodeSession(filePath, pending.id, await exportKeyB64(key));
       set({
         vault: { ...vault, tree: updatedTree },
         dirty: true,
@@ -382,7 +382,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         const sessionUnlockedIds = new Set(get().sessionUnlockedIds);
         sessionUnlockedIds.add(pending.id);
         const { filePath } = get();
-        if (filePath) saveNodeSession(filePath, pending.id, await exportKeyB64(key), keepUnlockedHours);
+        if (filePath) saveNodeSession(filePath, pending.id, await exportKeyB64(key));
         set({ nodeKeys, sessionUnlockedIds, pending: null, passwordError: null });
       } catch {
         set({ passwordError: "Incorrect password." });
@@ -582,21 +582,33 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     }
     const plaintext = await decryptFromB64(masterKey, payload);
     const parsed = JSON.parse(plaintext);
-    // Legacy payloads are a bare TipTap doc (top-level `type: "doc"`); new payloads
-    // are an envelope `{ doc, attachments }` with no top-level `type` field.
-    if (parsed && parsed.type === "doc") {
-      return { doc: parsed as JSONContent, attachments: [] };
+
+    // Current format: flat plain-text envelope.
+    if (parsed && typeof parsed.text === "string") {
+      return {
+        text: parsed.text,
+        bookmarks: parsed.bookmarks ?? [],
+        links: parsed.links ?? [],
+        attachments: (parsed.attachments ?? []) as Attachment[],
+      };
     }
-    return { doc: parsed.doc as JSONContent, attachments: (parsed.attachments ?? []) as Attachment[] };
+
+    // Legacy formats: a Tiptap/ProseMirror doc, either bare (`type: "doc"`, pre-envelope)
+    // or wrapped in a `{ doc, attachments }` envelope. Converted once, lazily, the next
+    // time the note is opened; saving afterwards rewrites it in the current format.
+    const legacyDoc: LegacyNode | undefined = parsed?.type === "doc" ? parsed : parsed?.doc;
+    const legacyAttachments = (parsed?.type === "doc" ? [] : parsed?.attachments ?? []) as Attachment[];
+    if (!legacyDoc) return null;
+    const migrated = convertTiptapDocToPlainText(legacyDoc);
+    return { ...migrated, attachments: legacyAttachments };
   },
 
-  saveNodeContent: async (id, doc, attachments) => {
+  saveNodeContent: async (id, content) => {
     const { vault, masterKey, nodeKeys } = get();
     if (!vault || !masterKey) return;
     const node = findNode(vault.tree, id);
     if (!node) return;
-    const envelope: NodeContent = { doc, attachments };
-    let payload = await encryptToB64(masterKey, JSON.stringify(envelope));
+    let payload = await encryptToB64(masterKey, JSON.stringify(content));
     if (node.locked) {
       const nodeKey = nodeKeys.get(id);
       if (!nodeKey) return;
@@ -705,7 +717,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   listBookmarksForPicker: async () => {
     const { vault, sessionUnlockedIds, loadNodeContent } = get();
     if (!vault) return [];
-    const docCache = new Map<string, JSONContent | null>();
+    const contentCache = new Map<string, NodeContent | null>();
     const entries: PickerEntry[] = [];
     for (const [bookmarkId, entry] of Object.entries(vault.index)) {
       const hostNode = findNode(vault.tree, entry.hostFileId);
@@ -715,12 +727,12 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         entries.push({ bookmarkId, label: null, hostFileId: hostNode.id, hostFileName: hostNode.name, locked: true });
         continue;
       }
-      if (!docCache.has(hostNode.id)) {
+      if (!contentCache.has(hostNode.id)) {
         const result = await loadNodeContent(hostNode.id);
-        docCache.set(hostNode.id, result?.doc ?? null);
+        contentCache.set(hostNode.id, result);
       }
-      const doc = docCache.get(hostNode.id);
-      const label = doc ? extractBookmarks(doc).find((b) => b.bookmarkId === bookmarkId)?.label ?? null : null;
+      const content = contentCache.get(hostNode.id);
+      const label = content ? extractBookmarks(content).find((b) => b.bookmarkId === bookmarkId)?.label ?? null : null;
       entries.push({ bookmarkId, label, hostFileId: hostNode.id, hostFileName: hostNode.name, locked: false });
     }
     return entries;
@@ -740,9 +752,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         entries.push({ fileId: node.id, fileName: node.name, locked: true, snippets: [] });
         continue;
       }
-      const result = await loadNodeContent(referrerId);
-      const doc = result?.doc ?? null;
-      const snippets = doc ? getLinkTextsForTargets(doc, targetSet) : [];
+      const content = await loadNodeContent(referrerId);
+      const snippets = content ? getLinkTextsForTargets(content, targetSet) : [];
       entries.push({ fileId: node.id, fileName: node.name, locked: false, snippets });
     }
     return entries;
@@ -764,8 +775,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       if (locked) continue;
       const result = await loadNodeContent(node.id);
       if (!result) continue;
-      const doc = result.doc;
-      const snippet = buildSnippet(extractPlainText(doc), q);
+      const snippet = buildSnippet(result.text, q);
       if (snippet) snippetByFileId.set(node.id, snippet);
     }
 

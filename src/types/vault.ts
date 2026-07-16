@@ -1,5 +1,3 @@
-import type { JSONContent } from "@tiptap/core";
-
 export type NodeType = "file" | "folder";
 
 export interface TreeNode {
@@ -38,7 +36,23 @@ export interface Attachment {
   data: string; // base64, no "data:mime;base64," prefix
 }
 
+export interface BookmarkRange {
+  bookmarkId: string;
+  label: string;
+  from: number;
+  to: number;
+}
+
+export interface LinkRange {
+  linkId: string;
+  targetBookmarkId: string;
+  from: number;
+  to: number;
+}
+
 export interface NodeContent {
-  doc: JSONContent;
+  text: string;
+  bookmarks: BookmarkRange[];
+  links: LinkRange[];
   attachments: Attachment[];
 }
