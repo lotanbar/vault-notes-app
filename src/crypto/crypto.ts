@@ -2,9 +2,17 @@ const PBKDF2_ITERATIONS = 250_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
+// Chunked instead of one `String.fromCharCode` call per byte (or one spread call
+// over the whole array, which blows the call stack on large payloads) — this is
+// the difference between milliseconds and seconds once notes carry multi-MB
+// attachments through this same encrypt/decrypt path.
+const B64_CHUNK_SIZE = 0x8000;
+
 function bytesToB64(bytes: Uint8Array): string {
   let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
+  for (let i = 0; i < bytes.length; i += B64_CHUNK_SIZE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + B64_CHUNK_SIZE));
+  }
   return btoa(binary);
 }
 

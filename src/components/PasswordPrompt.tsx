@@ -1,4 +1,4 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, KeyboardEvent } from "react";
 import { X, Check } from "lucide-react";
 
 interface PasswordPromptProps {
@@ -22,9 +22,16 @@ export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: Passw
     onSubmit(password);
   }
 
+  function handleKeyDown(e: KeyboardEvent<HTMLFormElement>) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
+  }
+
   return (
     <div className="modal-overlay">
-      <form className="modal" onSubmit={handleSubmit}>
+      <form className="modal" onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
         <h2>{title}</h2>
         <input
           type="password"
@@ -45,11 +52,11 @@ export function PasswordPrompt({ mode, title, error, onSubmit, onCancel }: Passw
         {error && <p className="modal-error">{error}</p>}
         <div className="modal-actions">
           <button type="button" onClick={onCancel}>
-            <X size={18} />
+            <X size={15} />
             Cancel
           </button>
           <button type="submit" className="primary" disabled={!canSubmit}>
-            <Check size={18} />
+            <Check size={15} />
             OK
           </button>
         </div>

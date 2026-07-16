@@ -670,10 +670,10 @@ export function Editor({ fileId, fileName }: EditorProps) {
               : "Other files link to this bookmark. Deleting it will break those links."
           }
           actions={[
-            { label: "Show who points here", icon: <Link2 size={18} />, onClick: () => setShowReferrers(true) },
+            { label: "Show who points here", icon: <Link2 size={15} />, onClick: () => setShowReferrers(true) },
             {
               label: "Delete anyway",
-              icon: <Trash2 size={18} />,
+              icon: <Trash2 size={15} />,
               onClick: handleDeleteBookmarkAnyway,
               variant: "danger",
             },
@@ -691,7 +691,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
           actions={[
             {
               label: "Delete",
-              icon: <Trash2 size={18} />,
+              icon: <Trash2 size={15} />,
               onClick: handleConfirmDeleteAttachment,
               variant: "danger",
             },

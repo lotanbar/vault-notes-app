@@ -55,7 +55,6 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   const MIN_SIDEBAR_WIDTH = 280;
   const SIDEBAR_MAX_RATIO = 0.7;
   const COLLAPSE_DRAG_DISTANCE = 60;
-  const RAIL_WIDTH = 56;
   const [sidebarWidth, setSidebarWidth] = useState(300);
   const [collapsed, setCollapsed] = useState(false);
   const [collapseArmed, setCollapseArmed] = useState(false);
@@ -235,7 +234,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   return (
     <div
       className={`sidebar${collapsed ? " collapsed" : ""}`}
-      style={{ width: collapsed ? RAIL_WIDTH : sidebarWidth }}
+      style={{ width: collapsed ? 0 : sidebarWidth }}
       ref={sidebarRef}
     >
       {collapsed && (
@@ -342,14 +341,14 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
               ? [
                   {
                     label: "Show who points here",
-                    icon: <Link size={18} />,
+                    icon: <Link size={15} />,
                     onClick: () => setShowReferrers(true),
                   },
                 ]
               : []),
             {
               label: entangledBookmarkIds ? "Delete anyway" : "Delete",
-              icon: <Trash2 size={18} />,
+              icon: <Trash2 size={15} />,
               onClick: handleDeleteConfirmed,
               variant: "danger" as const,
             },
