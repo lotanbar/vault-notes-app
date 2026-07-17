@@ -1,5 +1,12 @@
 export type NodeType = "file" | "folder";
 
+// Points at a note's encrypted content blob inside the vault file's append-only
+// blob region, instead of carrying the content inline. See src-tauri/src/vault.rs.
+export interface ContentRef {
+  payloadOffset: number;
+  length: number;
+}
+
 export interface TreeNode {
   id: string;
   type: NodeType;
@@ -10,7 +17,7 @@ export interface TreeNode {
   locked: boolean;
   lockSalt?: string;
   lockCheck?: string;
-  content?: string;
+  contentRef?: ContentRef;
 }
 
 export interface BookmarkIndexEntry {
@@ -26,6 +33,17 @@ export interface VaultFile {
   masterCheck: string;
   tree: TreeNode;
   index: BookmarkIndex;
+}
+
+// Pre-migration shape: content lived inline as a base64 ciphertext string
+// directly on the tree node instead of as a separate blob reference.
+export interface LegacyTreeNode extends Omit<TreeNode, "children" | "contentRef"> {
+  children: LegacyTreeNode[];
+  content?: string;
+}
+
+export interface LegacyVaultFile extends Omit<VaultFile, "tree"> {
+  tree: LegacyTreeNode;
 }
 
 export interface Attachment {

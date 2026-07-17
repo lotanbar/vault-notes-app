@@ -14,8 +14,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            vault::read_vault_file,
-            vault::write_vault_file,
+            vault::open_vault_file,
+            vault::vault_append_blob,
+            vault::vault_write_header,
+            vault::read_vault_blob,
+            vault::vault_create_fresh,
+            vault::backup_vault_file,
+            vault::finalize_vault_write,
             attachments::write_temp_attachment
         ])
         .run(tauri::generate_context!())

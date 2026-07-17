@@ -4064,9 +4064,10 @@ dependencies = [
 
 [[package]]
 name = "vault-notes-app"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

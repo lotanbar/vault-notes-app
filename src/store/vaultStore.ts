@@ -1,8 +1,7 @@
 import { create } from "zustand";
 import Fuse from "fuse.js";
-import { invoke } from "@tauri-apps/api/core";
 import { save, open } from "@tauri-apps/plugin-dialog";
-import type { VaultFile, TreeNode, NodeType, BookmarkIndex, Attachment, NodeContent } from "../types/vault";
+import type { VaultFile, LegacyVaultFile, TreeNode, NodeType, BookmarkIndex, Attachment, NodeContent } from "../types/vault";
 import { deriveKey, encryptToB64, decryptFromB64, randomSaltB64, exportKeyB64, importKeyB64 } from "../crypto/crypto";
 import {
   insertNode,
@@ -16,6 +15,18 @@ import {
 } from "../lib/treeOps";
 import { extractBookmarks, getLinkTextsForTargets } from "../lib/bookmarkOps";
 import { buildSnippet } from "../lib/searchOps";
+import { serializeVault } from "../lib/serializeVault";
+import {
+  openVaultFile,
+  appendVaultBlob,
+  writeVaultHeader,
+  readVaultBlob,
+  vaultCreateFresh,
+  backupVaultFile,
+  type VaultOpenResult,
+} from "../lib/vaultFileIO";
+import { migrateLegacyVault } from "../lib/vaultMigration";
+import { compactVaultTo } from "../lib/vaultCompaction";
 import { convertTiptapDocToPlainText, type LegacyNode } from "../editor/legacyMigration";
 import {
   getLastVaultPath,
@@ -30,12 +41,19 @@ import {
 
 const MASTER_CHECK_SENTINEL = "vault-notes-master-check-v1";
 const LOCK_CHECK_SENTINEL = "vault-notes-lock-check-v1";
+const BACKUP_SUFFIX = ".backup";
 
 type PendingAction =
   | { kind: "vault-create"; path: string }
-  | { kind: "vault-open"; path: string; raw: VaultFile }
+  | { kind: "vault-open"; path: string; raw: VaultFile; legacy: false }
+  | { kind: "vault-open"; path: string; raw: LegacyVaultFile; legacy: true }
   | { kind: "node-lock"; id: string }
   | { kind: "node-unlock"; id: string };
+
+function parseOpenResult(result: VaultOpenResult): { raw: VaultFile | LegacyVaultFile; legacy: boolean } {
+  if (result.format === "v2") return { raw: JSON.parse(result.header) as VaultFile, legacy: false };
+  return { raw: JSON.parse(result.contents) as LegacyVaultFile, legacy: true };
+}
 
 function newRootNode(): TreeNode {
   const now = Date.now();
@@ -147,6 +165,52 @@ interface VaultState {
   searchVault: (query: string) => Promise<SearchResult[]>;
 }
 
+// Shared by the password-prompt open path and the cached-session fast path:
+// migrates a legacy (pre-v2) vault in place if needed, restores locked-node
+// sessions, and lands the store in the same "vault open" state either way.
+async function finalizeVaultOpen(
+  set: (partial: Partial<VaultState>) => void,
+  path: string,
+  masterKey: CryptoKey,
+  raw: VaultFile | LegacyVaultFile,
+  legacy: boolean,
+): Promise<void> {
+  const vault = legacy ? await migrateLegacyVault(path, raw as LegacyVaultFile) : (raw as VaultFile);
+
+  // Best-effort safety net: one full copy per open, not per edit, so a corrupt
+  // append-in-progress can't lose more than the current session's edits.
+  void backupVaultFile(path, `${path}${BACKUP_SUFFIX}`);
+
+  const nodeSessions = loadNodeSessions(path);
+  const nodeKeys = new Map<string, CryptoKey>();
+  const sessionUnlockedIds = new Set<string>();
+  for (const [nodeId, s] of Object.entries(nodeSessions)) {
+    try {
+      nodeKeys.set(nodeId, await importKeyB64(s.keyB64));
+      sessionUnlockedIds.add(nodeId);
+    } catch {
+      // corrupt entry, skip
+    }
+  }
+
+  set({
+    filePath: path,
+    vault,
+    masterKey,
+    dirty: false,
+    error: null,
+    pending: null,
+    passwordError: null,
+    sessionUnlockedIds,
+    nodeKeys,
+    selectedIds: [],
+    activeFileId: null,
+    activeBookmarkId: null,
+    navBack: [],
+    navForward: [],
+  });
+}
+
 export const useVaultStore = create<VaultState>((set, get) => ({
   filePath: null,
   vault: null,
@@ -179,10 +243,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   openVault: async () => {
     const { filePath: currentPath, vault: currentVault, dirty } = get();
     if (currentPath && currentVault && dirty) {
-      invoke("write_vault_file", {
-        path: currentPath,
-        contents: JSON.stringify(currentVault, null, 2),
-      }).catch(() => {});
+      serializeVault(currentVault)
+        .then((headerJson) => writeVaultHeader(currentPath, headerJson))
+        .catch(() => {});
     }
     const path = await open({
       multiple: false,
@@ -190,9 +253,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     });
     if (!path || Array.isArray(path)) return;
     try {
-      const json = await invoke<string>("read_vault_file", { path });
-      const raw: VaultFile = JSON.parse(json);
-      set({ pending: { kind: "vault-open", path, raw }, passwordError: null });
+      const { raw, legacy } = parseOpenResult(await openVaultFile(path));
+      set({ pending: { kind: "vault-open", path, raw, legacy } as PendingAction, passwordError: null });
     } catch (e) {
       set({ error: String(e) });
     }
@@ -203,8 +265,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const path = getLastVaultPath();
     if (!path) return;
     try {
-      const json = await invoke<string>("read_vault_file", { path });
-      const raw: VaultFile = JSON.parse(json);
+      const { raw, legacy } = parseOpenResult(await openVaultFile(path));
 
       const session = loadVaultSession(path);
       if (session) {
@@ -212,33 +273,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
           const key = await importKeyB64(session.keyB64);
           const decrypted = await decryptFromB64(key, raw.masterCheck);
           if (decrypted === MASTER_CHECK_SENTINEL) {
-            const nodeSessions = loadNodeSessions(path);
-            const nodeKeys = new Map<string, CryptoKey>();
-            const sessionUnlockedIds = new Set<string>();
-            for (const [nodeId, s] of Object.entries(nodeSessions)) {
-              try {
-                nodeKeys.set(nodeId, await importKeyB64(s.keyB64));
-                sessionUnlockedIds.add(nodeId);
-              } catch {
-                // corrupt entry, skip
-              }
-            }
-            set({
-              filePath: path,
-              vault: raw,
-              masterKey: key,
-              dirty: false,
-              error: null,
-              pending: null,
-              passwordError: null,
-              sessionUnlockedIds,
-              nodeKeys,
-              selectedIds: [],
-              activeFileId: null,
-              activeBookmarkId: null,
-              navBack: [],
-              navForward: [],
-            });
+            await finalizeVaultOpen(set, path, key, raw, legacy);
             return;
           }
         } catch {
@@ -246,7 +281,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         }
       }
 
-      set({ pending: { kind: "vault-open", path, raw }, passwordError: null });
+      set({ pending: { kind: "vault-open", path, raw, legacy } as PendingAction, passwordError: null });
     } catch {
       // last vault file missing or unreadable — silently fall back to the landing screen
     }
@@ -262,16 +297,15 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         const key = await deriveKey(password, salt);
         const masterCheck = await encryptToB64(key, MASTER_CHECK_SENTINEL);
         const newVaultFile: VaultFile = {
-          version: 1,
+          version: 2,
           salt,
           masterCheck,
           tree: newRootNode(),
           index: {},
         };
-        await invoke("write_vault_file", {
-          path: pending.path,
-          contents: JSON.stringify(newVaultFile, null, 2),
-        });
+        await vaultCreateFresh(pending.path);
+        const headerJson = await serializeVault(newVaultFile);
+        await writeVaultHeader(pending.path, headerJson);
         setLastVaultPath(pending.path);
         saveVaultSession(pending.path, await exportKeyB64(key));
         set({
@@ -297,44 +331,21 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     }
 
     if (pending.kind === "vault-open") {
+      let key: CryptoKey;
       try {
-        const key = await deriveKey(password, pending.raw.salt);
+        key = await deriveKey(password, pending.raw.salt);
         const decrypted = await decryptFromB64(key, pending.raw.masterCheck);
         if (decrypted !== MASTER_CHECK_SENTINEL) throw new Error("mismatch");
-        setLastVaultPath(pending.path);
-        saveVaultSession(pending.path, await exportKeyB64(key));
-
-        // Restore any locked-node sessions from the previous run.
-        const nodeSessions = loadNodeSessions(pending.path);
-        const nodeKeys = new Map<string, CryptoKey>();
-        const sessionUnlockedIds = new Set<string>();
-        for (const [nodeId, s] of Object.entries(nodeSessions)) {
-          try {
-            nodeKeys.set(nodeId, await importKeyB64(s.keyB64));
-            sessionUnlockedIds.add(nodeId);
-          } catch {
-            // corrupt entry, skip
-          }
-        }
-
-        set({
-          filePath: pending.path,
-          vault: pending.raw,
-          masterKey: key,
-          dirty: false,
-          error: null,
-          pending: null,
-          passwordError: null,
-          sessionUnlockedIds,
-          nodeKeys,
-          selectedIds: [],
-          activeFileId: null,
-          activeBookmarkId: null,
-          navBack: [],
-          navForward: [],
-        });
       } catch {
         set({ passwordError: "Incorrect password." });
+        return;
+      }
+      setLastVaultPath(pending.path);
+      saveVaultSession(pending.path, await exportKeyB64(key));
+      try {
+        await finalizeVaultOpen(set, pending.path, key, pending.raw, pending.legacy);
+      } catch (e) {
+        set({ error: String(e), pending: null });
       }
       return;
     }
@@ -397,7 +408,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const { filePath, vault } = get();
     if (!filePath || !vault) return;
     try {
-      await invoke("write_vault_file", { path: filePath, contents: JSON.stringify(vault, null, 2) });
+      const headerJson = await serializeVault(vault);
+      await writeVaultHeader(filePath, headerJson);
       set({ dirty: false, error: null });
     } catch (e) {
       set({ error: String(e) });
@@ -405,16 +417,16 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   saveVaultAs: async () => {
-    const { vault } = get();
-    if (!vault) return;
+    const { vault, filePath } = get();
+    if (!vault || !filePath) return;
     const path = await save({
       filters: [{ name: "Vault", extensions: ["vlt"] }],
       defaultPath: "untitled.vlt",
     });
     if (!path) return;
     try {
-      await invoke("write_vault_file", { path, contents: JSON.stringify(vault, null, 2) });
-      set({ filePath: path, dirty: false, error: null });
+      const compacted = await compactVaultTo(vault, filePath, path);
+      set({ vault: compacted, filePath: path, dirty: false, error: null });
     } catch (e) {
       set({ error: String(e) });
     }
@@ -424,7 +436,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const { filePath, vault, dirty } = get();
     if (!filePath || !vault) return;
     if (dirty) {
-      invoke("write_vault_file", { path: filePath, contents: JSON.stringify(vault, null, 2) }).catch(() => {});
+      serializeVault(vault)
+        .then((headerJson) => writeVaultHeader(filePath, headerJson))
+        .catch(() => {});
     }
     clearVaultSession(filePath);
     set({
@@ -438,7 +452,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       activeBookmarkId: null,
       navBack: [],
       navForward: [],
-      pending: { kind: "vault-open", path: filePath, raw: vault },
+      pending: { kind: "vault-open", path: filePath, raw: vault, legacy: false },
       passwordError: null,
     });
   },
@@ -543,24 +557,29 @@ export const useVaultStore = create<VaultState>((set, get) => ({
 
   removeNodeLock: async (id) => {
     const { vault, sessionUnlockedIds, nodeKeys, filePath } = get();
-    if (!vault) return;
+    if (!vault || !filePath) return;
     const node = findNode(vault.tree, id);
     if (!node || !node.locked) return;
     const nodeKey = nodeKeys.get(id);
     if (!nodeKey) return;
-    const nextContent = node.content ? await decryptFromB64(nodeKey, node.content) : node.content;
+    let contentRef = node.contentRef;
+    if (contentRef) {
+      const wrapped = await readVaultBlob(filePath, contentRef);
+      const unwrapped = await decryptFromB64(nodeKey, wrapped);
+      contentRef = await appendVaultBlob(filePath, unwrapped);
+    }
     const updatedTree = applyToNode(vault.tree, id, (n) => ({
       ...n,
       locked: false,
       lockSalt: undefined,
       lockCheck: undefined,
-      content: nextContent,
+      contentRef,
     }));
     const nextSessionUnlocked = new Set(sessionUnlockedIds);
     nextSessionUnlocked.delete(id);
     const nextNodeKeys = new Map(nodeKeys);
     nextNodeKeys.delete(id);
-    if (filePath) clearNodeSession(filePath, id);
+    clearNodeSession(filePath, id);
     set({
       vault: { ...vault, tree: updatedTree },
       dirty: true,
@@ -570,11 +589,11 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   loadNodeContent: async (id) => {
-    const { vault, masterKey, nodeKeys } = get();
-    if (!vault || !masterKey) return null;
+    const { vault, masterKey, nodeKeys, filePath } = get();
+    if (!vault || !masterKey || !filePath) return null;
     const node = findNode(vault.tree, id);
-    if (!node || !node.content) return null;
-    let payload = node.content;
+    if (!node || !node.contentRef) return null;
+    let payload = await readVaultBlob(filePath, node.contentRef);
     if (node.locked) {
       const nodeKey = nodeKeys.get(id);
       if (!nodeKey) return null;
@@ -604,8 +623,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   saveNodeContent: async (id, content) => {
-    const { vault, masterKey, nodeKeys } = get();
-    if (!vault || !masterKey) return;
+    const { vault, masterKey, nodeKeys, filePath } = get();
+    if (!vault || !masterKey || !filePath) return;
     const node = findNode(vault.tree, id);
     if (!node) return;
     let payload = await encryptToB64(masterKey, JSON.stringify(content));
@@ -614,7 +633,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       if (!nodeKey) return;
       payload = await encryptToB64(nodeKey, payload);
     }
-    const nextTree = applyToNode(vault.tree, id, (n) => ({ ...n, content: payload, modifiedAt: Date.now() }));
+    const contentRef = await appendVaultBlob(filePath, payload);
+    const nextTree = applyToNode(vault.tree, id, (n) => ({ ...n, contentRef, modifiedAt: Date.now() }));
     set({ vault: { ...vault, tree: nextTree }, dirty: true });
   },
 
@@ -800,7 +820,18 @@ useVaultStore.subscribe((state) => {
   }, AUTOSAVE_DEBOUNCE_MS);
 });
 
+// Structural sharing: only clone the path from the root down to the edited node.
+// Sibling subtrees that don't contain `id` keep their original object references,
+// so consumers that key off reference equality (e.g. the sidebar tree) don't see
+// unrelated notes/folders as "changed" every time one note's content is saved.
 function applyToNode(root: TreeNode, id: string, fn: (n: TreeNode) => TreeNode): TreeNode {
   if (root.id === id) return fn(root);
-  return { ...root, children: root.children.map((c) => applyToNode(c, id, fn)) };
+  if (root.children.length === 0) return root;
+  let changed = false;
+  const nextChildren = root.children.map((c) => {
+    const next = applyToNode(c, id, fn);
+    if (next !== c) changed = true;
+    return next;
+  });
+  return changed ? { ...root, children: nextChildren } : root;
 }
