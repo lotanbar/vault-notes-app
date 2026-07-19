@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   Bookmark as BookmarkIcon,
   Link2,
@@ -562,6 +563,16 @@ export function Editor({ fileId, fileName }: EditorProps) {
     }
   }
 
+  async function handleSaveAttachmentAs(attachment: Attachment) {
+    try {
+      const destPath = await save({ defaultPath: attachment.name });
+      if (!destPath) return;
+      await invoke("save_attachment_to_path", { destPath, dataB64: attachment.data });
+    } catch (e) {
+      console.error("Failed to save attachment:", e);
+    }
+  }
+
   function handleDragEnter(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     if (!e.dataTransfer.types.includes("Files")) return;
@@ -603,7 +614,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={(toolbarState?.bookmarkMode ?? "disabled") === "disabled"}
           title={toolbarState?.bookmarkMode === "remove" ? "Remove Bookmark" : "New Bookmark"}
         >
-          <BookmarkIcon size={18} />
+          <BookmarkIcon size={24} />
         </button>
         <button
           className="icon-btn"
@@ -611,16 +622,16 @@ export function Editor({ fileId, fileName }: EditorProps) {
           disabled={(toolbarState?.linkMode ?? "disabled") === "disabled"}
           title={toolbarState?.linkMode === "remove" ? "Remove Link" : "New Link"}
         >
-          <Link2 size={18} />
+          <Link2 size={24} />
         </button>
 
         <span className="toolbar-divider spacer-left" />
 
         <button className="icon-btn" onClick={goBack} disabled={navBack.length === 0} title="Back">
-          <ArrowLeft size={18} />
+          <ArrowLeft size={24} />
         </button>
         <button className="icon-btn" onClick={goForward} disabled={navForward.length === 0} title="Forward">
-          <ArrowRight size={18} />
+          <ArrowRight size={24} />
         </button>
       </div>
 
@@ -635,6 +646,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
         attachments={attachments}
         onOpen={handleOpenAttachment}
         onRequestDelete={setPendingDeleteAttachment}
+        onSaveAs={handleSaveAttachmentAs}
       />
 
       <div className="editor-filename" dir={titleDir}>{fileName}</div>

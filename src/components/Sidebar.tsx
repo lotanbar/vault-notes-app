@@ -5,20 +5,17 @@ import {
   FilePlus,
   Trash2,
   FolderUp,
-  Lock,
-  Unlock,
-  ShieldPlus,
-  ShieldX,
   Vault as VaultIcon,
-  FolderOpen,
   Link,
   PanelLeftOpen,
+  PanelLeftClose,
 } from "lucide-react";
 import { TreeView } from "./TreeView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ReferrersPopup } from "./ReferrersPopup";
 import { SearchBar } from "./SearchBar";
 import { useVaultStore } from "../store/vaultStore";
+import { useUiStore } from "../store/uiStore";
 import { resolveInsertTarget, findNode, collectDescendantIds } from "../lib/treeOps";
 import { findEntangledBookmarks } from "../lib/bookmarkOps";
 import type { TreeNode } from "../types/vault";
@@ -38,15 +35,14 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   const moveNodesAction = useVaultStore((s) => s.moveNodesAction);
   const deleteNodesAction = useVaultStore((s) => s.deleteNodesAction);
   const addNodeLock = useVaultStore((s) => s.addNodeLock);
-  const toggleNodeLock = useVaultStore((s) => s.toggleNodeLock);
   const removeNodeLock = useVaultStore((s) => s.removeNodeLock);
-  const openVault = useVaultStore((s) => s.openVault);
   const lockVault = useVaultStore((s) => s.lockVault);
 
   const treeApiRef = useRef<TreeApi<TreeNode> | undefined>(undefined);
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
   const [entangledBookmarkIds, setEntangledBookmarkIds] = useState<string[] | null>(null);
   const [showReferrers, setShowReferrers] = useState(false);
+  const [confirmLockVault, setConfirmLockVault] = useState(false);
 
   const sidebarRef = useRef<HTMLDivElement>(null);
   const treeWrapRef = useRef<HTMLDivElement>(null);
@@ -56,7 +52,8 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
   const SIDEBAR_MAX_RATIO = 0.7;
   const COLLAPSE_DRAG_DISTANCE = 60;
   const [sidebarWidth, setSidebarWidth] = useState(300);
-  const [collapsed, setCollapsed] = useState(false);
+  const collapsed = useUiStore((s) => s.sidebarCollapsed);
+  const setCollapsed = useUiStore((s) => s.setSidebarCollapsed);
   const [collapseArmed, setCollapseArmed] = useState(false);
   const draggingRef = useRef(false);
   const collapseArmedRef = useRef(false);
@@ -124,13 +121,8 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [setSelection]);
 
-  const sessionUnlockedIds = useVaultStore((s) => s.sessionUnlockedIds);
-
   const singleSelected = selectedIds.length === 1 ? selectedIds[0] : null;
   const multiSelectActive = selectedIds.length > 1;
-  const singleSelectedNode = singleSelected && vault ? findNode(vault.tree, singleSelected) : null;
-  const singleSelectedHasLock = !!singleSelectedNode?.locked;
-  const singleSelectedNeedsPassword = singleSelectedHasLock && !sessionUnlockedIds.has(singleSelectedNode!.id);
 
   function handleCreate(type: "folder" | "file") {
     if (!vault) return;
@@ -157,19 +149,6 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
     setConfirmDelete(null);
     setEntangledBookmarkIds(null);
     setShowReferrers(false);
-  }
-
-  function handleToggleSessionLock() {
-    if (singleSelected) toggleNodeLock(singleSelected);
-  }
-
-  function handleAddOrRemoveLock() {
-    if (!singleSelected) return;
-    if (singleSelectedHasLock) {
-      removeNodeLock(singleSelected);
-    } else {
-      addNodeLock(singleSelected);
-    }
   }
 
   function handleMoveToRoot() {
@@ -243,7 +222,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
           onClick={() => setCollapsed(false)}
           title="Show Explorer"
         >
-          <PanelLeftOpen size={20} />
+          <PanelLeftOpen size={24} />
         </button>
       )}
       {/* Kept mounted (not conditionally removed) so the tree's expanded-folder
@@ -256,7 +235,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
             disabled={multiSelectActive}
             title="New Folder"
           >
-            <FolderPlus size={20} />
+            <FolderPlus size={24} />
           </button>
           <button
             className="icon-btn"
@@ -264,7 +243,7 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
             disabled={multiSelectActive}
             title="New File"
           >
-            <FilePlus size={20} />
+            <FilePlus size={24} />
           </button>
           <button
             className="icon-btn"
@@ -272,30 +251,21 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
             disabled={selectedIds.length === 0}
             title="Move to Root"
           >
-            <FolderUp size={20} />
-          </button>
-          <span className="toolbar-divider" />
-          <button
-            className="icon-btn"
-            onClick={handleToggleSessionLock}
-            disabled={multiSelectActive || !singleSelectedHasLock}
-            title={singleSelectedNeedsPassword ? "Unlock" : "Lock"}
-          >
-            {singleSelectedNeedsPassword ? <Lock size={20} /> : <Unlock size={20} />}
+            <FolderUp size={24} />
           </button>
           <button
-            className="icon-btn"
-            onClick={handleAddOrRemoveLock}
-            disabled={multiSelectActive || !singleSelected || (singleSelectedHasLock && singleSelectedNeedsPassword)}
-            title={singleSelectedHasLock ? "Remove Lock" : "Add Lock"}
+            className="icon-btn spacer-left"
+            onClick={() => setConfirmLockVault(true)}
+            title="Lock Vault and Return to Main Screen"
           >
-            {singleSelectedHasLock ? <ShieldX size={20} /> : <ShieldPlus size={20} />}
+            <VaultIcon size={24} />
           </button>
-          <button className="icon-btn" onClick={lockVault} title="Lock Vault">
-            <VaultIcon size={20} />
-          </button>
-          <button className="icon-btn spacer-left" onClick={openVault} title="Open New Vault">
-            <FolderOpen size={20} />
+          <button
+            className="icon-btn"
+            onClick={() => setCollapsed(true)}
+            title="Hide Explorer"
+          >
+            <PanelLeftClose size={24} />
           </button>
         </div>
         <SearchBar onSelectFile={handleSearchSelectFile} onSelectFolder={handleSearchSelectFolder} />
@@ -361,6 +331,23 @@ export function Sidebar({ onOpenFile }: SidebarProps) {
       )}
       {showReferrers && entangledBookmarkIds && (
         <ReferrersPopup bookmarkIds={entangledBookmarkIds} onClose={() => setShowReferrers(false)} />
+      )}
+      {confirmLockVault && (
+        <ConfirmDialog
+          title="Lock Vault"
+          message="Lock the vault and return to the main screen?"
+          actions={[
+            {
+              label: "Lock Vault",
+              icon: <VaultIcon size={15} />,
+              onClick: () => {
+                setConfirmLockVault(false);
+                lockVault();
+              },
+            },
+          ]}
+          onCancel={() => setConfirmLockVault(false)}
+        />
       )}
     </div>
   );

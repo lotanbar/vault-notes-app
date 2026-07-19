@@ -21,7 +21,8 @@ pub fn run() {
             vault::vault_create_fresh,
             vault::backup_vault_file,
             vault::finalize_vault_write,
-            attachments::write_temp_attachment
+            attachments::write_temp_attachment,
+            attachments::save_attachment_to_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -31,3 +31,11 @@ pub fn write_temp_attachment(name: String, data_b64: String) -> Result<String, S
 
     Ok(path.to_string_lossy().to_string())
 }
+
+#[tauri::command]
+pub fn save_attachment_to_path(dest_path: String, data_b64: String) -> Result<(), String> {
+    let bytes = general_purpose::STANDARD
+        .decode(data_b64.as_bytes())
+        .map_err(|e| e.to_string())?;
+    fs::write(&dest_path, &bytes).map_err(|e| e.to_string())
+}

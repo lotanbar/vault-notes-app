@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { NodeApi, NodeRendererProps } from "react-arborist";
-import { ChevronRight, ChevronDown, Folder, File, Lock, Unlock, ShieldPlus, ShieldX } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, Lock, Unlock, ShieldPlus, ShieldX } from "lucide-react";
 import type { TreeNode } from "../types/vault";
 import { useVaultStore } from "../store/vaultStore";
 
@@ -58,14 +58,16 @@ export function NodeRow({
             node.toggle();
           }}
         >
-          {node.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          {node.isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
         </span>
       ) : (
         <span className="tree-toggle" />
       )}
-      <span className="tree-icon">
-        {data.type === "folder" ? <Folder size={15} /> : <File size={15} />}
-      </span>
+      {data.type === "folder" && (
+        <span className="tree-icon">
+          <Folder size={18} />
+        </span>
+      )}
       {node.isEditing ? <EditInput node={node} /> : <span className="tree-name">{data.name}</span>}
       {data.locked ? (
         <span className="tree-lock-group">
@@ -78,7 +80,7 @@ export function NodeRow({
             }}
             title={sessionUnlocked ? "Lock" : "Unlock"}
           >
-            {sessionUnlocked ? <Unlock size={15} /> : <Lock size={15} />}
+            {sessionUnlocked ? <Unlock size={18} /> : <Lock size={18} />}
           </span>
           <span
             className={`tree-lock tree-lock-remove${disabled || !sessionUnlocked ? " disabled" : ""}`}
@@ -89,7 +91,7 @@ export function NodeRow({
             }}
             title="Remove Lock"
           >
-            <ShieldX size={15} />
+            <ShieldX size={18} />
           </span>
         </span>
       ) : (
@@ -102,7 +104,7 @@ export function NodeRow({
           }}
           title="Add Lock"
         >
-          <ShieldPlus size={15} />
+          <ShieldPlus size={18} />
         </span>
       )}
     </div>

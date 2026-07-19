@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { FolderPlus, FolderOpen, FileText } from "lucide-react";
 import { useVaultStore } from "./store/vaultStore";
 import { useZoomStore } from "./store/zoomStore";
+import { useUiStore } from "./store/uiStore";
 import { Sidebar } from "./components/Sidebar";
 import { PasswordPrompt } from "./components/PasswordPrompt";
 import { Editor } from "./components/Editor";
@@ -22,6 +23,7 @@ function App() {
   const sessionUnlockedIds = useVaultStore((s) => s.sessionUnlockedIds);
   const activeFileId = useVaultStore((s) => s.activeFileId);
   const openFile = useVaultStore((s) => s.openFile);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
 
   const uiZoom = useZoomStore((s) => s.uiZoom);
   const zoomIn = useZoomStore((s) => s.zoomIn);
@@ -102,7 +104,7 @@ function App() {
     <div className="zoom-viewport">
       <div className="app-shell" style={{ zoom: uiZoom }}>
         <Sidebar onOpenFile={openFile} />
-        <main className="main-area">
+        <main className={`main-area${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
           <div className="main-body">
             {error && <p className="error-text">{error}</p>}
             {activeFileOpenable && activeNode ? (

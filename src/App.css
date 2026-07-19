@@ -238,18 +238,19 @@ body.resizing-sidebar .sidebar-resize-handle {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 2px;
-  padding: 8px;
+  gap: 0;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .icon-btn {
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   padding: 0;
   border-color: transparent;
   background-color: transparent;
   color: var(--text-0);
+  transition: background-color 0.12s ease;
 }
 .icon-btn:hover {
   background-color: var(--bg-2);
@@ -340,9 +341,13 @@ body.resizing-sidebar .sidebar-resize-handle {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px;
-  padding: 8px 20px;
+  gap: 0;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+}
+
+.main-area.sidebar-collapsed .editor-toolbar {
+  padding-left: 56px;
 }
 
 .toolbar-divider {
@@ -399,18 +404,18 @@ body.resizing-sidebar .sidebar-resize-handle {
 .attachment-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 20px 0;
+  gap: 6px;
+  padding: 8px 20px 0;
 }
 
 .attachment-chip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 220px;
-  padding: 6px 8px;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background-color: var(--bg-1);
   cursor: pointer;
 }
@@ -432,21 +437,24 @@ body.resizing-sidebar .sidebar-resize-handle {
 }
 
 .attachment-chip-name {
-  font-size: 0.85em;
+  font-size: 0.78em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .attachment-chip-size {
-  font-size: 0.72em;
+  font-size: 0.68em;
   color: var(--text-2);
 }
 
-.attachment-chip-delete {
-  width: 28px;
-  height: 28px;
+.attachment-chip-action {
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
+}
+.attachment-chip-action:hover {
+  background-color: var(--border);
 }
 
 .attachment-reject-msg {
@@ -583,15 +591,15 @@ body.ctrl-pressed .link-anchor {
 
 .search-input-wrap svg {
   position: absolute;
-  left: 9px;
+  left: 11px;
   color: var(--text-2);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
-  padding: 0.45em 0.7em 0.45em 2em;
-  font-size: 0.75em;
+  padding: 0.6em 0.8em 0.6em 2.2em;
+  font-size: 0.95em;
   background-color: var(--bg-1);
 }
 
@@ -665,9 +673,9 @@ body.ctrl-pressed .link-anchor {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin: 1px 0;
-  padding: 5px 8px;
+  padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
@@ -686,7 +694,7 @@ body.ctrl-pressed .link-anchor {
 }
 
 .tree-toggle {
-  width: 15px;
+  width: 18px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -701,13 +709,13 @@ body.ctrl-pressed .link-anchor {
 .tree-name {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 0.75em;
+  font-size: 0.82em;
   font-weight: 400;
 }
 
 .tree-name-input {
   padding: 0 4px;
-  font-size: 0.75em;
+  font-size: 0.82em;
 }
 
 .tree-lock-group {
@@ -722,7 +730,7 @@ body.ctrl-pressed .link-anchor {
   flex-shrink: 0;
   display: inline-flex;
   cursor: pointer;
-  color: var(--text-2);
+  color: var(--text-0);
   padding: 2px;
   border-radius: 4px;
 }

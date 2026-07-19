@@ -452,7 +452,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       activeBookmarkId: null,
       navBack: [],
       navForward: [],
-      pending: { kind: "vault-open", path: filePath, raw: vault, legacy: false },
+      pending: null,
       passwordError: null,
     });
   },
