@@ -26,7 +26,7 @@ import {
   type VaultOpenResult,
 } from "../lib/vaultFileIO";
 import { migrateLegacyVault } from "../lib/vaultMigration";
-import { compactVaultTo } from "../lib/vaultCompaction";
+import { compactVaultTo, compactVaultInPlace } from "../lib/vaultCompaction";
 import { convertTiptapDocToPlainText, type LegacyNode } from "../editor/legacyMigration";
 import {
   getLastVaultPath,
@@ -145,6 +145,7 @@ interface VaultState {
   saveVault: () => Promise<void>;
   saveVaultAs: () => Promise<void>;
   lockVault: () => void;
+  flushForExit: () => Promise<void>;
 
   setSelection: (ids: string[]) => void;
   createNode: (type: NodeType, parentId: string | null, index: number) => TreeNode | null;
@@ -463,13 +464,14 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   lockVault: () => {
-    const { filePath, vault, dirty } = get();
+    const { filePath, vault } = get();
     if (!filePath || !vault) return;
-    if (dirty) {
-      serializeVault(vault)
-        .then((headerJson) => writeVaultHeader(filePath, headerJson))
-        .catch(() => {});
-    }
+    // Always compact (not just flush the header) so dead space from earlier
+    // edits/deleted notes gets reclaimed on every lock, not only via the
+    // rarely-used "Save As". Fire-and-forget: locking clears the master key
+    // from memory immediately, same as before, rather than waiting on the
+    // rewrite of however much live content there is.
+    compactVaultInPlace(vault, filePath).catch(() => {});
     clearVaultSession(filePath);
     set({
       vault: null,
@@ -485,6 +487,16 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       pending: null,
       passwordError: null,
     });
+  },
+
+  // Called from the window's close-requested handler (see App.tsx) before it
+  // lets the close actually go through, so quitting via the window controls
+  // compacts just like locking does -- covers the "just close the window"
+  // half of never touching Save As.
+  flushForExit: async () => {
+    const { filePath, vault } = get();
+    if (!filePath || !vault) return;
+    await compactVaultInPlace(vault, filePath).catch(() => {});
   },
 
   setSelection: (ids) => set({ selectedIds: ids }),
