@@ -365,6 +365,9 @@ export function Editor({ fileId, fileName }: EditorProps) {
         editor.revealLineInCenter(pos.lineNumber, monaco.editor.ScrollType.Immediate);
       }
       refreshToolbarState();
+    }).catch((e) => {
+      if (cancelled) return;
+      console.error(`Failed to load note content for ${fileId}:`, e);
     });
 
     return () => {

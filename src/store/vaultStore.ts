@@ -357,11 +357,26 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const lockSalt = randomSaltB64();
       const key = await deriveKey(password, lockSalt);
       const lockCheck = await encryptToB64(key, LOCK_CHECK_SENTINEL);
-      const updatedTree = applyToNode(vault.tree, pending.id, (n) => ({
+      const { filePath: currentPath } = get();
+      let contentRef = node.contentRef;
+      if (contentRef && currentPath) {
+        const raw = await readVaultBlob(currentPath, contentRef);
+        const wrapped = await encryptToB64(key, raw);
+        contentRef = await appendVaultBlob(currentPath, wrapped);
+      }
+      // Re-read current state: the readVaultBlob/encrypt/appendVaultBlob awaits
+      // above may have taken a while (large blobs share one global file-write
+      // queue), during which another async action could have committed its own
+      // tree update. Merging onto the pre-await `vault` snapshot here would
+      // silently revert that.
+      const latestVault = get().vault;
+      if (!latestVault) return;
+      const updatedTree = applyToNode(latestVault.tree, pending.id, (n) => ({
         ...n,
         locked: true,
         lockSalt,
         lockCheck,
+        contentRef,
       }));
       const nodeKeys = new Map(get().nodeKeys);
       nodeKeys.set(pending.id, key);
@@ -370,7 +385,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const { filePath } = get();
       if (filePath) saveNodeSession(filePath, pending.id, await exportKeyB64(key));
       set({
-        vault: { ...vault, tree: updatedTree },
+        vault: { ...latestVault, tree: updatedTree },
         dirty: true,
         nodeKeys,
         sessionUnlockedIds,
@@ -568,7 +583,12 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const unwrapped = await decryptFromB64(nodeKey, wrapped);
       contentRef = await appendVaultBlob(filePath, unwrapped);
     }
-    const updatedTree = applyToNode(vault.tree, id, (n) => ({
+    // Re-read current state: the awaits above may have taken a while, during
+    // which another async action could have committed its own tree update.
+    // Merging onto the pre-await `vault` snapshot here would silently revert it.
+    const latestVault = get().vault;
+    if (!latestVault) return;
+    const updatedTree = applyToNode(latestVault.tree, id, (n) => ({
       ...n,
       locked: false,
       lockSalt: undefined,
@@ -581,7 +601,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     nextNodeKeys.delete(id);
     clearNodeSession(filePath, id);
     set({
-      vault: { ...vault, tree: updatedTree },
+      vault: { ...latestVault, tree: updatedTree },
       dirty: true,
       sessionUnlockedIds: nextSessionUnlocked,
       nodeKeys: nextNodeKeys,
@@ -593,11 +613,21 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     if (!vault || !masterKey || !filePath) return null;
     const node = findNode(vault.tree, id);
     if (!node || !node.contentRef) return null;
-    let payload = await readVaultBlob(filePath, node.contentRef);
+    const raw = await readVaultBlob(filePath, node.contentRef);
+    let payload = raw;
     if (node.locked) {
       const nodeKey = nodeKeys.get(id);
       if (!nodeKey) return null;
-      payload = await decryptFromB64(nodeKey, payload);
+      try {
+        payload = await decryptFromB64(nodeKey, raw);
+      } catch {
+        // Some already-locked notes predate the fix that re-wraps content with
+        // the lock key on lock: their blob was never actually re-encrypted, so
+        // it's still just master-key-wrapped. Fall back to that interpretation
+        // rather than treating the note as unreadable; the next save rewraps
+        // it correctly via the normal locked-save path.
+        payload = raw;
+      }
     }
     const plaintext = await decryptFromB64(masterKey, payload);
     const parsed = JSON.parse(plaintext);
@@ -634,8 +664,15 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       payload = await encryptToB64(nodeKey, payload);
     }
     const contentRef = await appendVaultBlob(filePath, payload);
-    const nextTree = applyToNode(vault.tree, id, (n) => ({ ...n, contentRef, modifiedAt: Date.now() }));
-    set({ vault: { ...vault, tree: nextTree }, dirty: true });
+    // Re-read current state instead of the pre-await snapshot: other async
+    // actions (another note's save, a lock/unlock) may have committed their
+    // own tree updates while this appendVaultBlob call was queued behind
+    // others, and merging onto the stale snapshot here would silently
+    // revert them.
+    const latestVault = get().vault;
+    if (!latestVault) return;
+    const nextTree = applyToNode(latestVault.tree, id, (n) => ({ ...n, contentRef, modifiedAt: Date.now() }));
+    set({ vault: { ...latestVault, tree: nextTree }, dirty: true });
   },
 
   openFile: (node) => {
