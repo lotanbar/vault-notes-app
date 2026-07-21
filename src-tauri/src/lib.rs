@@ -1,3 +1,4 @@
+mod attachment_watch;
 mod attachments;
 mod vault;
 
@@ -22,7 +23,10 @@ pub fn run() {
             vault::backup_vault_file,
             vault::finalize_vault_write,
             attachments::write_temp_attachment,
-            attachments::save_attachment_to_path
+            attachments::save_attachment_to_path,
+            attachment_watch::start_attachment_watch,
+            attachment_watch::stop_attachment_watch,
+            attachment_watch::stop_all_attachment_watches
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

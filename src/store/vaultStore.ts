@@ -27,6 +27,7 @@ import {
 } from "../lib/vaultFileIO";
 import { migrateLegacyVault } from "../lib/vaultMigration";
 import { compactVaultTo, compactVaultInPlace } from "../lib/vaultCompaction";
+import { stopAllAttachmentWatches } from "../lib/attachmentWatch";
 import { convertTiptapDocToPlainText, type LegacyNode } from "../editor/legacyMigration";
 import {
   getLastVaultPath,
@@ -472,6 +473,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     // from memory immediately, same as before, rather than waiting on the
     // rewrite of however much live content there is.
     compactVaultInPlace(vault, filePath).catch(() => {});
+    stopAllAttachmentWatches().catch(() => {});
     clearVaultSession(filePath);
     set({
       vault: null,

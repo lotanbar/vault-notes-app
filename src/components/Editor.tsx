@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   Bookmark as BookmarkIcon,
@@ -16,6 +15,12 @@ import { useVaultStore } from "../store/vaultStore";
 import { useZoomStore } from "../store/zoomStore";
 import { isLinkBroken } from "../lib/bookmarkOps";
 import { fileToAttachment, MAX_ATTACHMENT_BYTES } from "../lib/attachmentOps";
+import {
+  openAndWatchAttachment,
+  registerAttachmentUpdateHandler,
+  stopWatchForAttachment,
+  unregisterAttachmentUpdateHandler,
+} from "../lib/attachmentWatch";
 import { detectDirection } from "../lib/textDirection";
 import type { Attachment, NodeContent } from "../types/vault";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -233,6 +238,16 @@ export function Editor({ fileId, fileName }: EditorProps) {
     // (only the initial useRef(true) sets it true, and nothing else did).
     mountedRef.current = true;
 
+    registerAttachmentUpdateHandler(fileId, (attachmentId, dataB64, size) => {
+      const next = latestAttachments.current.map((a) =>
+        a.id === attachmentId ? { ...a, data: dataB64, size } : a,
+      );
+      latestAttachments.current = next;
+      if (mountedRef.current) setAttachments(next);
+      latestContentRef.current = { ...latestContentRef.current, attachments: next };
+      flushSave();
+    });
+
     const editor = monaco.editor.create(containerRef.current, {
       value: "",
       language: "plaintext",
@@ -435,6 +450,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
     return () => {
       cancelled = true;
       mountedRef.current = false;
+      unregisterAttachmentUpdateHandler(fileId);
       stopThemeWatch();
       for (const d of disposables) d.dispose();
       if (saveTimer.current) {
@@ -620,16 +636,13 @@ export function Editor({ fileId, fileName }: EditorProps) {
     latestAttachments.current = next;
     setAttachments(next);
     flushSave();
+    void stopWatchForAttachment(fileId, pendingDeleteAttachment.id);
     setPendingDeleteAttachment(null);
   }
 
   async function handleOpenAttachment(attachment: Attachment) {
     try {
-      const path = await invoke<string>("write_temp_attachment", {
-        name: attachment.name,
-        dataB64: attachment.data,
-      });
-      await openPath(path);
+      await openAndWatchAttachment(fileId, attachment);
     } catch (e) {
       console.error("Failed to open attachment:", e);
     }
