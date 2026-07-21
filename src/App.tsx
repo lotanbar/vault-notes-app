@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { FolderPlus, FolderOpen, FileText } from "lucide-react";
 import { useVaultStore } from "./store/vaultStore";
 import { useZoomStore } from "./store/zoomStore";
@@ -30,7 +30,13 @@ function App() {
   const zoomOut = useZoomStore((s) => s.zoomOut);
   const zoomReset = useZoomStore((s) => s.zoomReset);
 
+  const didAutoOpen = useRef(false);
   useEffect(() => {
+    // Guards against React StrictMode's dev-mode double-invoke of this effect,
+    // which would otherwise fire two concurrent auto-opens (and, for a legacy
+    // vault, two concurrent migrations) for the same path.
+    if (didAutoOpen.current) return;
+    didAutoOpen.current = true;
     tryAutoOpenLastVault();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

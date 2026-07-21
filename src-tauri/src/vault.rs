@@ -1,7 +1,11 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
+use tauri::Manager;
 
 // Append-only single-file container. Layout:
 //   [8 bytes file magic]
@@ -187,9 +191,25 @@ pub fn vault_create_fresh(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// Backups live in the app's own data directory, named from the vault's stem
+// plus a hash of its full path (so two vaults that happen to share a filename
+// in different folders don't collide) — never dropped next to the vault
+// itself, which just clutters whatever folder the user keeps their notes in.
 #[tauri::command]
-pub fn backup_vault_file(path: String, backup_path: String) -> Result<(), String> {
-    std::fs::copy(&path, &backup_path).map_err(|e| e.to_string())?;
+pub fn backup_vault_file(app: tauri::AppHandle, path: String, suffix: String) -> Result<(), String> {
+    let mut dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    dir.push("vault-backups");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let stem = Path::new(&path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "vault".to_string());
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+
+    dir.push(format!("{stem}-{:016x}{suffix}", hasher.finish()));
+    std::fs::copy(&path, &dir).map_err(|e| e.to_string())?;
     Ok(())
 }
 

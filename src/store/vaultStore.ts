@@ -43,6 +43,15 @@ const MASTER_CHECK_SENTINEL = "vault-notes-master-check-v1";
 const LOCK_CHECK_SENTINEL = "vault-notes-lock-check-v1";
 const BACKUP_SUFFIX = ".backup";
 
+// Editor unmount (switching notes) and in-editor autosave can both call
+// saveNodeContent for the same id in close succession; the append+contentRef
+// update is async, so a fast switch-away-and-back could otherwise have
+// loadNodeContent read node.contentRef before that save has landed in the
+// tree, silently reloading the pre-save version (e.g. dropping an attachment
+// that was just added). Track in-flight saves per id so loads and later
+// saves for that id can wait for them to actually commit first.
+const pendingContentSaves = new Map<string, Promise<void>>();
+
 type PendingAction =
   | { kind: "vault-create"; path: string }
   | { kind: "vault-open"; path: string; raw: VaultFile; legacy: false }
@@ -149,6 +158,12 @@ interface VaultState {
 
   loadNodeContent: (id: string) => Promise<NodeContent | null>;
   saveNodeContent: (id: string, content: NodeContent) => Promise<void>;
+  // Lower-level pieces exposed for Editor.tsx, which needs to reserve a save
+  // slot for a note synchronously (before an async attachment read starts)
+  // so a fast switch-away-and-back can't race it. See saveNodeContent/
+  // runExclusive in the implementation for the ordering guarantee this gives.
+  saveNodeContentRaw: (id: string, content: NodeContent) => Promise<void>;
+  runExclusive: <T>(id: string, work: () => Promise<T>) => Promise<T>;
 
   openFile: (node: TreeNode) => void;
   navigateToBookmark: (targetBookmarkId: string) => void;
@@ -179,7 +194,7 @@ async function finalizeVaultOpen(
 
   // Best-effort safety net: one full copy per open, not per edit, so a corrupt
   // append-in-progress can't lose more than the current session's edits.
-  void backupVaultFile(path, `${path}${BACKUP_SUFFIX}`);
+  void backupVaultFile(path, BACKUP_SUFFIX);
 
   const nodeSessions = loadNodeSessions(path);
   const nodeKeys = new Map<string, CryptoKey>();
@@ -609,6 +624,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   loadNodeContent: async (id) => {
+    await (pendingContentSaves.get(id) ?? Promise.resolve());
     const { vault, masterKey, nodeKeys, filePath } = get();
     if (!vault || !masterKey || !filePath) return null;
     const node = findNode(vault.tree, id);
@@ -652,7 +668,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     return { ...migrated, attachments: legacyAttachments };
   },
 
-  saveNodeContent: async (id, content) => {
+  saveNodeContentRaw: async (id, content) => {
     const { vault, masterKey, nodeKeys, filePath } = get();
     if (!vault || !masterKey || !filePath) return;
     const node = findNode(vault.tree, id);
@@ -674,6 +690,27 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     const nextTree = applyToNode(latestVault.tree, id, (n) => ({ ...n, contentRef, modifiedAt: Date.now() }));
     set({ vault: { ...latestVault, tree: nextTree }, dirty: true });
   },
+
+  // Chains `work` onto any operation already in flight for this id, so two
+  // saves for the same note (e.g. an attach-triggered flush followed moments
+  // later by the unmount-on-navigate flush) commit in the order they were
+  // issued instead of racing each other's appendVaultBlob/tree-update pair.
+  // Callers that need to read mutable refs (like Editor.tsx's latest-content
+  // refs) for the content to save MUST read them from inside `work`, not
+  // before calling runExclusive — reading them eagerly at the call site would
+  // capture a stale snapshot if this call ends up queued behind another
+  // pending operation for the same id.
+  runExclusive: (id, work) => {
+    const prior = pendingContentSaves.get(id) ?? Promise.resolve();
+    const run = prior.then(work);
+    pendingContentSaves.set(
+      id,
+      run.then(() => undefined, () => undefined),
+    );
+    return run;
+  },
+
+  saveNodeContent: (id, content) => get().runExclusive(id, () => get().saveNodeContentRaw(id, content)),
 
   openFile: (node) => {
     const { sessionUnlockedIds } = get();

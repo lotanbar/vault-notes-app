@@ -378,6 +378,30 @@ body.resizing-sidebar .sidebar-resize-handle {
   padding-inline-end: 0;
 }
 
+/* Direction is judged per line (Editor.tsx tags each RTL line with an
+   `rtl-line` decoration, the same inlineClassName mechanism bookmarks/links
+   already use), not per note — so a lone English line inside an otherwise
+   Hebrew note stays LTR. Each rendered line is actually three nested layers:
+   .view-line (position:absolute, full editor width) > an unnamed wrapper
+   span (position:absolute, left:0, width = text's own content width) > the
+   token span(s) that carry our `rtl-line` class (plain static inline text —
+   confirmed live via CDP). Only that middle wrapper is actually positioned,
+   so it's the one that needs to move; it has no class of its own, so we
+   reach it with :has(). Known, accepted trade-offs: the cursor/selection
+   overlay is a separate absolutely-positioned layer Monaco moves
+   independently with the same LTR column math, so it doesn't follow this
+   and can visually drift from the right-anchored text; and a line that also
+   carries a bookmark/link decoration gets split into multiple sibling
+   wrapper spans, each anchored to the same right edge, so it can render
+   overlapping instead of in order. */
+.rtl-line {
+  direction: rtl;
+}
+.view-line > span:has(> .rtl-line) {
+  left: auto !important;
+  right: 0 !important;
+}
+
 .drop-overlay {
   position: absolute;
   inset: 0;

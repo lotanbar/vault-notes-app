@@ -67,7 +67,6 @@ interface LinkMeta {
 }
 
 interface ToolbarState {
-  contentDir: "ltr" | "rtl";
   bookmarkMode: MarkMode;
   bookmarkRemoveId?: string;
   linkMode: MarkMode;
@@ -78,7 +77,8 @@ const EMPTY_CONTENT: NodeContent = { text: "", bookmarks: [], links: [], attachm
 
 export function Editor({ fileId, fileName }: EditorProps) {
   const loadNodeContent = useVaultStore((s) => s.loadNodeContent);
-  const saveNodeContent = useVaultStore((s) => s.saveNodeContent);
+  const runExclusive = useVaultStore((s) => s.runExclusive);
+  const saveNodeContentRaw = useVaultStore((s) => s.saveNodeContentRaw);
   const addBookmarkToIndex = useVaultStore((s) => s.addBookmarkToIndex);
   const removeBookmarkFromIndex = useVaultStore((s) => s.removeBookmarkFromIndex);
   const addReferrerToIndex = useVaultStore((s) => s.addReferrerToIndex);
@@ -95,6 +95,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const bookmarkDecosRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
   const linkDecosRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+  const rtlLineDecosRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
   const bookmarkMetaRef = useRef<BookmarkMeta[]>([]);
   const linkMetaRef = useRef<LinkMeta[]>([]);
   const latestContentRef = useRef<NodeContent>(EMPTY_CONTENT);
@@ -103,6 +104,8 @@ export function Editor({ fileId, fileName }: EditorProps) {
   const dragCounter = useRef(0);
   const rejectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const editedBeforeLoadRef = useRef(false);
   const prevBookmarkWidthsRef = useRef<Map<string, number>>(new Map());
   const skipBookmarkCheckRef = useRef(false);
 
@@ -119,7 +122,14 @@ export function Editor({ fileId, fileName }: EditorProps) {
 
   function flushSave() {
     if (!loadedRef.current) return;
-    saveNodeContent(fileId, { ...latestContentRef.current, attachments: latestAttachments.current });
+    // Read the refs lazily, inside the work callback, rather than building the
+    // content object here: if this ends up queued behind another pending save
+    // for this note (see runExclusive in vaultStore.ts), building it eagerly
+    // would capture a stale snapshot instead of whatever those refs hold by
+    // the time this actually gets to run.
+    runExclusive(fileId, () =>
+      saveNodeContentRaw(fileId, { ...latestContentRef.current, attachments: latestAttachments.current }),
+    );
   }
 
   function refreshToolbarState() {
@@ -146,12 +156,28 @@ export function Editor({ fileId, fileName }: EditorProps) {
     const link = hasSelection ? computeMarkMode(selFrom, selTo, linkRanges) : { mode: "disabled" as const };
 
     setToolbarState({
-      contentDir: detectDirection(model.getValue()),
       bookmarkMode: bookmark.mode,
       bookmarkRemoveId: bookmark.id,
       linkMode: link.mode,
       linkRemoveId: link.id,
     });
+  }
+
+  // Judges direction per line (not per note) so a fully-English line inside
+  // an otherwise-Hebrew note stays LTR, and vice versa.
+  function refreshRtlLineDecorations(editor: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel) {
+    const decos: { range: monaco.Range; options: monaco.editor.IModelDecorationOptions }[] = [];
+    for (let line = 1; line <= model.getLineCount(); line++) {
+      const content = model.getLineContent(line);
+      if (content.trim() && detectDirection(content) === "rtl") {
+        decos.push({
+          range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)),
+          options: { inlineClassName: "rtl-line", stickiness: STICKINESS },
+        });
+      }
+    }
+    if (rtlLineDecosRef.current) rtlLineDecosRef.current.set(decos);
+    else rtlLineDecosRef.current = editor.createDecorationsCollection(decos);
   }
 
   function rebuildBookmarkDecorations(editor: monaco.editor.IStandaloneCodeEditor, ranges: monaco.Range[]) {
@@ -201,6 +227,11 @@ export function Editor({ fileId, fileName }: EditorProps) {
   useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
+    // React Strict Mode's dev-only mount->cleanup->mount cycle runs this
+    // effect's cleanup once immediately after the first mount, which would
+    // otherwise permanently leave mountedRef false for the second, real mount
+    // (only the initial useRef(true) sets it true, and nothing else did).
+    mountedRef.current = true;
 
     const editor = monaco.editor.create(containerRef.current, {
       value: "",
@@ -250,7 +281,13 @@ export function Editor({ fileId, fileName }: EditorProps) {
 
     const disposables = [
       editor.onDidChangeModelContent(() => {
-        if (!loadedRef.current) return;
+        if (!loadedRef.current) {
+          // The user typed/pasted before the async loadNodeContent below resolved.
+          // Flag it so that callback preserves what's in the model instead of
+          // stomping it with the (now-stale) loaded content.
+          editedBeforeLoadRef.current = true;
+          return;
+        }
         const model = editor.getModel();
         if (!model) return;
 
@@ -308,6 +345,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
 
+        refreshRtlLineDecorations(editor, model);
         refreshToolbarState();
       }),
       editor.onDidChangeCursorSelection(() => refreshToolbarState()),
@@ -331,9 +369,32 @@ export function Editor({ fileId, fileName }: EditorProps) {
 
     loadNodeContent(fileId).then((result) => {
       if (cancelled) return;
-      const content = result ?? EMPTY_CONTENT;
       const model = editor.getModel();
       if (!model) return;
+
+      if (editedBeforeLoadRef.current) {
+        // Don't overwrite what the user already typed/pasted while this load
+        // was in flight. Its bookmarks/links refer to offsets in the old text,
+        // which no longer apply, so treat the current buffer as a fresh,
+        // mark-less note; attachments are unaffected by text edits, so keep those.
+        const attachments = result?.attachments ?? [];
+        latestAttachments.current = attachments;
+        setAttachments(attachments);
+        bookmarkMetaRef.current = [];
+        rebuildBookmarkDecorations(editor, []);
+        linkMetaRef.current = [];
+        rebuildLinkDecorations(editor, []);
+        prevBookmarkWidthsRef.current = new Map();
+        latestContentRef.current = { text: model.getValue(), bookmarks: [], links: [], attachments };
+        loadedRef.current = true;
+        refreshRtlLineDecorations(editor, model);
+        refreshToolbarState();
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      const content = result ?? EMPTY_CONTENT;
       model.setValue(content.text);
 
       const index = useVaultStore.getState().vault?.index ?? {};
@@ -357,6 +418,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
       prevBookmarkWidthsRef.current = new Map(content.bookmarks.map((b) => [b.bookmarkId, b.to - b.from]));
       latestContentRef.current = content;
       loadedRef.current = true;
+      refreshRtlLineDecorations(editor, model);
 
       const targetBookmarkId = useVaultStore.getState().activeBookmarkId;
       const target = targetBookmarkId ? content.bookmarks.find((b) => b.bookmarkId === targetBookmarkId) : undefined;
@@ -372,6 +434,7 @@ export function Editor({ fileId, fileName }: EditorProps) {
 
     return () => {
       cancelled = true;
+      mountedRef.current = false;
       stopThemeWatch();
       for (const d of disposables) d.dispose();
       if (saveTimer.current) {
@@ -538,11 +601,17 @@ export function Editor({ fileId, fileName }: EditorProps) {
     }
     if (accepted.length === 0) return;
 
-    const newAttachments = await Promise.all(accepted.map(fileToAttachment));
-    const next = [...latestAttachments.current, ...newAttachments];
-    latestAttachments.current = next;
-    setAttachments(next);
-    flushSave();
+    // Reserve this note's save slot synchronously, before the FileReader-based
+    // read below, so a fast switch-away-and-back can't have a freshly mounted
+    // Editor for this note load in between the read finishing and this saving
+    // — its loadNodeContent call would see this reservation and wait for it.
+    await runExclusive(fileId, async () => {
+      const newAttachments = await Promise.all(accepted.map(fileToAttachment));
+      const next = [...latestAttachments.current, ...newAttachments];
+      latestAttachments.current = next;
+      if (mountedRef.current) setAttachments(next);
+      await saveNodeContentRaw(fileId, { ...latestContentRef.current, attachments: next });
+    });
   }
 
   function handleConfirmDeleteAttachment() {
@@ -656,7 +725,6 @@ export function Editor({ fileId, fileName }: EditorProps) {
       <div
         ref={containerRef}
         className="editor-content monaco-host"
-        dir={toolbarState?.contentDir ?? "ltr"}
       />
 
       {isDragOver && (

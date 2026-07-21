@@ -40,8 +40,11 @@ export function vaultCreateFresh(path: string): Promise<void> {
   return enqueue(() => invoke<void>("vault_create_fresh", { path }));
 }
 
-export function backupVaultFile(path: string, backupPath: string): Promise<void> {
-  return enqueue(() => invoke<void>("backup_vault_file", { path, backupPath })).catch(() => {});
+// `suffix` distinguishes what kind of backup this is (".backup", ".pre-v2-backup");
+// the Rust side resolves the actual destination into the app's own data
+// directory rather than next to the vault file.
+export function backupVaultFile(path: string, suffix: string): Promise<void> {
+  return enqueue(() => invoke<void>("backup_vault_file", { path, suffix })).catch(() => {});
 }
 
 export function finalizeVaultWrite(tempPath: string, targetPath: string): Promise<void> {
